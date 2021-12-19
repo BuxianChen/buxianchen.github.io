@@ -1,10 +1,6 @@
 <!DOCTYPE html>
 <html lang="{{ page.lang | default: site.lang | default: "en" }}">
-  <head>
-      {% if page.use_math %}
-        {% include mathjax.html %}
-      {% endif %}
-  </head>
+
   {%- include head.html -%}
 
   <body>
@@ -12,22 +8,13 @@
     {%- include header.html -%}
 
     <main class="page-content" aria-label="Content">
-      <div class="post-categories">
-        {% if post %}
-          {% assign categories = post.categories %}
-        {% else %}
-          {% assign categories = page.categories %}
-        {% endif %}
-        {% for category in categories %}
-        <a href="{{site.baseurl}}/categories/#{{category|slugize}}">{{category}}</a>
-        {% unless forloop.last %}&nbsp;{% endunless %}
-        {% endfor %}
-      </div>
       <div class="wrapper">
         {{ content }}
       </div>
     </main>
+
     {%- include footer.html -%}
+
   </body>
 
 </html>
