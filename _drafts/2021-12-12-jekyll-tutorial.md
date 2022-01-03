@@ -16,15 +16,16 @@ date: 2021-12-12 22:30:04 +0800
 Ruby 语言中包的呈现形式一般会是一个 `.gem` 文件，RubyGems 是安装 Ruby 时自带的一个包管理工具，用于将源代码打包为 `.gem` 文件，在 shell 中使用 `gem` 命令即为 RubyGems 工具。
 
 ### Rails
-Rails 是一套基于 Ruby 的著名开发框架，Jekyll 也是基于此框架编写的。Rails 使用一个叫做 Bundle 的包管理工具，可以简单视为对原生 RubyGems 的一层封装，在使用 Bundle 进行包管理时，可以将一个项目的全部依赖关系写入到一个文本文件中（默认文件名为 Gemfile），这样就可以方便地使用 Bundle 进行依赖包的安装了n
+Rails 是一套基于 Ruby 的著名开发框架，Jekyll 也是基于此框架编写的。Rails 使用一个叫做 Bundle 的包管理工具，可以简单视为对原生 RubyGems 的一层封装，在使用 Bundle 进行包管理时，可以将一个项目的全部依赖关系写入到一个文本文件中（默认文件名为 Gemfile），这样就可以方便地使用 Bundle 进行依赖包的安装了。
 
 ### Ruby 类比 Python
-|Ruby|Python|说明|
-|---|---|---|
-|Ruby|Python|都是脚本语言|
-|RubyGems、Bundle|pip|包管理工具|
-|Gemfile|requirements.txt|依赖包列表|
-|Rails|Flask|Rails 是基于 Ruby 的框架，Flask 是基于 Python 的框架|
+<table>
+    <tr> <td>Ruby</td> <td>Python</td> <td>说明</td> </tr>
+    <tr> <td>Ruby</td> <td>Python</td> <td>都是脚本语言</td> </tr>
+    <tr> <td>RubyGems、Bundle</td> <td>pip</td> <td>包管理工具</td> </tr>
+	<tr> <td>Gemfile</td> <td>requirements.txt</td> <td>依赖包列表</td> </tr>
+    <tr> <td>Rails</td> <td>Flask</td> <td>Rails 是基于 Ruby 的框架，Flask 是基于 Python 的框架</td> </tr>
+</table>
 
 ### 安装过程
 参照 [jekyll 官网](https://jekyllrb.com/docs/installation/) 的安装步骤即可。
@@ -61,11 +62,11 @@ _config.html
 - `_data` 文件夹：用于添加全局变量，例如在 `_data` 文件夹下建立一个名为 `navigation.yml` 的文件，那么 `site.data.navigation` 就指代的是这个文件里的数据，可以在 Liquid 模板语言中被引用
 
 - `_includes` 文件夹：例如建立一个名为 `navigation.html` 的文件，那么它可以被 `_layout` 中的例如 `default.html` 用如下方式引入
-
+{% raw %}
   ```text
-  
+  {% include navigation.html %}
   ```
-
+{% endraw %}
 - `_layout` 文件夹下的文件 `default.html`，可以使用在其他文件中，只要开头包含
 
   ```

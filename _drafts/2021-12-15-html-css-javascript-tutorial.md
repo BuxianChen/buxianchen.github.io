@@ -4,6 +4,8 @@ title:  "html/css/javascript tutorial"
 date: 2021-12-15 22:30:04 +0800
 ---
 
+{:toc}
+
 ## 概述
 
 html 是一种标记语言，换句话说，是一种按照某种格式来书写的文本，这种格式可以被浏览器所解析。css 是对 html 的补充，用于规定文本的渲染方式，即呈现出来的视觉效果，如果不使用 css，html 可以直接对每个元素设定 `style` 来做到这一点，但将样式独立为一个单独的文件可以将内容与显示格式分离，起到解耦的效果，而 css 文件本身也不过是一种配置文件，用于指定显示格式。javascript 是对 html 的补充，使得用户可以对页面进行操作与交互。可以将 javascript 的内容直接写在 `html` 的 `script` 标签中，但与 css 类似，将其独立为一些单独的文件便于维护，而 javascript 本身是一种编程语言。
@@ -16,7 +18,7 @@ html 是一种标记语言，换句话说，是一种按照某种格式来书写
 
 ## HTML
 
-### 基础教程
+### tutorial
 
 ```html
 <!doctype html>
@@ -94,7 +96,7 @@ html 是一种标记语言，换句话说，是一种按照某种格式来书写
 
 ## CSS
 
-### 基础教程
+### tutorial
 
 放在 html 的 head 标签中
 
@@ -160,9 +162,44 @@ ROOT/
 
 ### SASS
 
+由于 css 文件中可能会存在许多冗余，例如同样的样式对于多个标签具有公共性，这样需要做统一修改时会变得麻烦且容易出错，sass 可以解决这一问题。具体的做法是：sass 定义了一套”语言“，而 sass 是一个转换工具，可以将 sass 这套语言转换为标准的 css 文件。引用 sass 官方的介绍词：
+
+> Sass is the most mature, stable, and powerful professional grade CSS extension language in the world.
+
+#### hello world
+
+sass 工具的输入是一个 scss 文件，输出是一个 css 文件，例如：
+
+`test.scss` 的文件内容如下
+
+```
+$font-stack: Helvetica, sans-serif;
+$primary-color: #333;
+
+body {
+  font: 100% $font-stack;
+  color: $primary-color;
+}
+```
+
+执行命令：`sass test.scss test.css`，将生成转换后的 `test.css` 文件。
+
+```
+body {
+  font: 100% Helvetica, sans-serif;
+  color: #333;
+}
+```
+
+备注：旧版本定义的文件格式为 `.sass` 文件，与 `.scss` 文件定义的语法格式区别不大，主要区别在于 scss 文件使用了花括号与分号进行代码块的限定（有点像 C 语言风格），而 sass 文件则依赖于缩进（有点像 Python 语言风格）。就目前来说，推荐使用 scss 文件格式，因此转换命令会稍显诡异，例如：`sass xxx.scss xxx.css`。
+
+#### tutorial
+
+[Sass 官网](https://sass-lang.com/guide)
+
 ## JavaScript
 
-### 基础教程
+### tutorial
 
 ```html
 <!DOCTYPE html>
