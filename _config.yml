@@ -1,10 +1,10 @@
 title: Humanpia
 email: buxian6@gmail.com
 description: >-
-  Some personal blogs, just for fun, don't take is seriously.
+  Some personal blogs, just for fun, don't take it seriously.
 baseurl: ""
 url: ""
-github_username:  BuxianChen
+github_username: BuxianChen
 
 markdown: kramdown
 # theme: minima
