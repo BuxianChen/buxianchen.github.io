@@ -5,20 +5,103 @@ title:  "grep/find/sed/awk tutorial"
 
 ## glob 与正则表达式
 
+glob 与正则表达式都是用来描述通用的字符串模式。然而各种 shell 命令以及编程语言对 glob 与正则表达式的支持各不相同，在写法上也存在较大差异。
+
+### glob
+
+具体语法可以参考[博客](http://www.ruanyifeng.com/blog/2018/09/bash-wildcards.html)。
+
+### Simple Regular Expressions
+
+具体使用方法参考[维基百科](https://en.wikibooks.org/wiki/Regular_Expressions/Simple_Regular_Expressions)。总结如下：
+
+```
+., [], [^ ], ^, $, ()   均为常见的含义
+\n   n可以取值为1~9, 例如(ab)c\1表示匹配abcab, 此种用法不被POSIX Extended Regular Expression所接受
+a*   表示匹配若干个a
+[xyz]*   可以匹配xyx
+\1*  例如(a.)c\1*可以匹配abcab, 但不能匹配abcac
+\(xx\)*   是非法的写法
+```
+
+### POSIX Basic Regular Expression
+
+简称为 BRE，具体使用方法参考[维基百科](https://en.wikibooks.org/wiki/Regular_Expressions/POSIX_Basic_Regular_Expressions)。主要用来向后兼容 Simple RegularExpression
+
+```
+.  用于匹配任意单个字符, 而[a.b]表示a或.或b
+[]  特殊情况处理：[]abc], [abc-], [-abc]：匹配]必须放开头, 匹配-必须放开头或结尾
+[^] 特殊情况处理：[^]abc], [^-abc], [^abc-]
+^  匹配开头
+$  匹配结尾
+*
+```
+
+```
+\{m\}, \{m,\}, \{m,n\}
+\(\)  里面被当作是一个单一元素\(ab\)*表示匹配abab
+\n    表示匹配第n个括号, 与Simple Regular Expression 兼容, 但不被ERE所使用
+```
+
+许多命令的默认情况下使用 BRE。
+
+### POSIX Extended Regular Expression
+
+简称为 ERE，与 BRE 的区别主要在于
+
+```
+{m}, {m,}, {m,n}
+()  里面被当作是一个单一元素(ab)*表示匹配abab
+\n  非法
+```
+
+### Perl Regular Expression
+
+
+
 
 ## grep
 
-正则表达式的介绍略去，需要注意的是 grep 并不支持所有的正则表达式语法，例如不能使用类似 `.*?` 进行非贪婪匹配。
+grep 支持的正则表达式语法可参考[维基百科](https://en.wikibooks.org/wiki/Grep)，它所支持的正则表达式包含 POSIX Basic Regular Expression。在默认情况（不加例如 `-E` 等参数时）下，支持如下写法：
+
+```
+*, ., ^, $, [], [^ ], \(\), \n, \{i\}, \{i.j\}. \{i,\}
+```
+
+
 
 ## find
 
+使用 `find -regex` 时，默认使用 Emacs Regular Expressions，但可以使用 `-regextype` 来修改这一行为。
+
 ```
-find . -type f -name a*
+find . -type f -name 'a*'  # 使用glob
 ```
+
+find 命令还可以用来对找到的文件执行命令，例如：
+
+```
+find . -type d -name 'a*' -exec ls {} \;
+```
+
+> 备注：此处 `\;` 是必须的，执行逻辑是假定找到的目录名为 `ab`、`ac`，则执行
+>
+> ```
+> ls ab;
+> ls ac;
+> ```
+>
+> 也可以使用 `+` 替换 `\;`，但此时变为
+>
+> ```
+> ls ab ac
+> ```
+>
+> 关于反斜杠为什么是必须的可以参照 [stackoverflow](https://stackoverflow.com/questions/20913198/why-are-the-backslash-and-semicolon-required-with-the-find-commands-exec-optio)。
 
 ## sed
 
-sed 命令最常见的作用是用来进行文本替换，例子如下：
+sed 命令最常见的作用是文本替换，例子如下：
 
 ```bash
 echo -e "abcabc\nabcdef" | sed "s/ab/de/"  # 只匹配替换一次
@@ -81,3 +164,9 @@ echo -e "1,bc\n1,abcd\n2,abc" | awk -F , '$1 == 1 && $2 ~ /^ab/ {print $0}'
 ```
 1,abcd
 ```
+
+## perl
+
+perl 是一种编程语言，功能强于 sed，引用[维基](https://en.wikibooks.org/wiki/Sed)对 sed 的介绍：
+
+> **sed** ("**s**tream **ed**itor") is [Unix](https://en.wikibooks.org/wiki/Unix) utility for parsing and transforming text files, with ports available on a variety of operating systems. For many purposes, it has been superseded by [perl](https://en.wikibooks.org/wiki/Perl) (or the earlier [AWK](https://en.wikibooks.org/wiki/AWK)), but for simple transforms in shell scripts, sed retains some use.
