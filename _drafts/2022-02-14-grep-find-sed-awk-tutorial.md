@@ -1,6 +1,7 @@
 ---
 layout: post
 title:  "(WIP)grep/find/sed/awk tutorial"
+date: 2022-02-14 22:31:04 +0800
 ---
 
 ## glob 与正则表达式
