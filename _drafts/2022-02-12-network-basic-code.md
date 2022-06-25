@@ -4,6 +4,20 @@ title: "(WIP)神经网络基本单元"
 date: 2022-02-11 22:31:04 +0800
 ---
 
+## 动机、参考资料、涉及内容
+
+涉及内容
+
+不限CV、NLP、语音
+
+- 一些即插即用的小组件，例如：SENetBlock、FPN、ResNetBlock等
+- 一些复杂的层或API，例如：CTCLoss，RoIAlign
+- 一些容易混淆的层或API，例如：NLLLoss
+
+不包含内容
+
+- 一些特定的API：[eniops](https://github.com/arogozhnikov/einops)、scatter、gather
+
 ## CTCLoss
 
 手动实现 `CTCLoss` 的前向过程：参考[blog](https://distill.pub/2017/ctc/)
