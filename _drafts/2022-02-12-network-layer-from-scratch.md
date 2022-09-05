@@ -108,15 +108,27 @@ output, h_n = gru(inputs)
 ```
 备注：
 - 默认情况下，`torch.nn.GRU` 层的输入应该是 `(L, B, C)` 形状的，其中 `B` 为批量大小，`L` 为序列长度，`C` 为每个 token 的特征维数。
+- 对于多层双向GRU，pytorch的计算逻辑参考：[pytorch论坛](https://discuss.pytorch.org/t/bidirectional-gru-with-multilayers-what-are-the-inputs-to-the-2nd-layer/51568)
 - 对于输出层，`h_n` 代表隐层的最终输出，其排布方式参考[pytorch论坛](https://discuss.pytorch.org/t/how-can-i-know-which-part-of-h-n-of-bidirectional-rnn-is-for-backward-process/3883)，为：
     ```python
     [
-        layer_0_forward,  # 正向GRU第1层的hidden状态
-        layer_0_backward,  # 反向GRU第1层的hidden状态
-        layer_1_forward,  # 正向GRU第2层的hidden状态
-        layer_1_backward,  # 反向GRU第2层的hidden状态
-        layer_2_forward,  # 正向GRU第3层的hidden状态
-        layer_2_backward  # 反向GRU第3层的hidden状态
+        layer_0_forward,  # 正向GRU第1层的hidden状态: (B, hidden_size)
+        layer_0_backward,  # 反向GRU第1层的hidden状态: (B, hidden_size)
+        layer_1_forward,  # 正向GRU第2层的hidden状态: (B, hidden_size)
+        layer_1_backward,  # 反向GRU第2层的hidden状态: (B, hidden_size)
+        layer_2_forward,  # 正向GRU第3层的hidden状态: (B, hidden_size)
+        layer_2_backward  # 反向GRU第3层的hidden状态: (B, hidden_size)
+    ]
+    ```
+    `output` 为最后一层的输出，其排布方式为：
+    ```python
+    [
+        L,
+        B,
+        [
+            layer_2_forward,  # 正向GRU最后一层的输出: (hidden_size,)
+            layer_2_backward  # 反向GRU最后一层的输出: (hidden_size,)
+        ]
     ]
     ```
 
@@ -136,24 +148,23 @@ for i in range(4):
     hidden = gru_cell(inputs[i], hidden)
 ```
 
-### GRUCell 计算过程详解与手动实现
+### GRUCell 计算过程详解与手动实现(正向计算)
 
 ```python
-def manual_cal(gru_cell, input, hidden):
+def manual_gru_cell(input, hidden, weight_ih, weight_hh, bias_ih, bias_hh):
     """
     Args:
-        gru_cell (nn.GRUCell)
         input: (B, d_in)
         hidden: (B, d_h)
+        weight_ih: (3*d_h, d_in)
+        weight_hh: (3*d_h, d_h)
+        bias_ih: (3*d_h,)
+        bias_hh: (3*d_h,)
     Returns:
         hidden: (B, d_h)
     """
     d_in = input.shape[-1]
     d_h = hidden.shape[-1]
-    weight_ih = gru_cell.state_dict()['weight_ih']  # (3*d_h, d_in)
-    weight_hh = gru_cell.state_dict()['weight_hh']  # (3*d_h, d_h)
-    bias_ih = gru_cell.state_dict()['bias_ih']  # (3*d_h)
-    bias_hh = gru_cell.state_dict()['bias_hh']  # (3*d_h)
     ih = torch.matmul(input, weight_ih.T) + bias_ih  # (B, d_in), (d_in, 3*d_h)
     hh = torch.matmul(hidden, weight_hh.T) + bias_hh # (B, d_h), (d_h, 3*d_h)
     ih1, ih2, ih3 = torch.chunk(ih, 3, dim=1)
@@ -163,13 +174,96 @@ def manual_cal(gru_cell, input, hidden):
     n = torch.tanh(ih3 + r*hh3)  # (B, d_h)
     hidden = (1-z)*n + z*hidden
     return hidden
-input = torch.rand(3, 4)  # (B, d_in)
-hidden = torch.rand(3, 2)  # (B, d_h)
-gru_cell = nn.GRUCell(input_size=4, hidden_size=2, bias=True)
-
-manual_result = manual_cal(gru_cell, input, hidden)
+input_size = 4
+hiiden_size = 2
+B = 3
+input = torch.rand(3, input_size)
+hidden = torch.rand(3, hiiden_size)
+gru_cell = nn.GRUCell(input_size=input_size, hidden_size=hiiden_size, bias=True)
+manual_result = manual_gru_cell(
+    input,
+    hidden, 
+    *[gru_cell.state_dict()[key] for key in ["weight_ih", "weight_hh", "bias_ih", "bias_hh"]]
+)
 torch_result = gru_cell(input, hidden)
-# manual_result == torch_result
+# manual_result == torch_result  # True
 ```
 
-### GRU 计算过程详解与手动实现
+### GRU 计算过程详解与手动实现(正向计算)
+
+```python
+def manual_gru(input, hidden, gru):
+    """
+    Args:
+        input: (L, B, d_in)
+        hidden: (num_directions*num_layer, B, d_h)
+        gru (GRU):
+    Returns:
+        output: (L, B, num_directions*d_h)
+        h_n: (num_directions*num_layer, B, d_h)
+    """
+    num_layers = gru.num_layers
+    num_directions = 2 if gru.bidirectional else 1
+    B, d_h = hidden.size()[1:]
+    L = input.size(0)
+    h_n = torch.zeros(num_directions*num_layers, B, d_h)
+    
+    if gru.bidirectional:
+        x = [_.squeeze(0) for _ in torch.chunk(input, L, dim=0)]
+        x_reverse = list(reversed(x))
+
+        for i in range(0, num_layers):
+            names = [f"weight_ih_l{i}", f"weight_hh_l{i}", f"bias_ih_l{i}", f"bias_hh_l{i}"]
+            parameters = [gru.state_dict()[key] for key in names]
+            h = hidden[2*i]  # (B, d_h)
+            for l in range(L):
+                h = manual_gru_cell(x[l], h, *parameters)
+                x[l] = h
+            h_n[2*i] = h
+
+            names = [name + "_reverse" for name in names]
+            parameters = [gru.state_dict()[key] for key in names]
+            h = hidden[2*i+1]
+            for l in range(L):
+                h = manual_gru_cell(x_reverse[l], h, *parameters)
+                x_reverse[l] = h
+            h_n[2*i+1] = h
+            output = torch.cat([torch.stack(x, dim=0), torch.stack(list(reversed(x_reverse)), dim=0)], dim=-1)
+            x = [_.squeeze(0) for _ in torch.chunk(output, L, dim=0)]
+            x_reverse = list(reversed(x))
+    else:
+        x = [_.squeeze(0) for _ in torch.chunk(input, L, dim=0)]
+        for i in range(0, num_layers):
+            names = [f"weight_ih_l{i}", f"weight_hh_l{i}", f"bias_ih_l{i}", f"bias_hh_l{i}"]
+            parameters = [gru.state_dict()[key] for key in names]
+            h = hidden[i]  # (B, d_h)
+            for l in range(L):
+                h = manual_gru_cell(x[l], h, *parameters)
+                x[l] = h
+            h_n[i] = h
+        output = torch.stack(x, dim=0)
+    return output, h_n
+
+L = 6
+B = 2
+input_size = 4
+hidden_size = 2
+num_layers = 2
+bidirectional = True
+num_directions = 2 if bidirectional else 1
+gru = nn.GRU(
+    input_size=input_size,
+    hidden_size=hidden_size,
+    num_layers=num_layers,
+    bidirectional=bidirectional)
+inputs = torch.rand(L, B, input_size)
+h_0 = torch.rand(num_directions*num_layers, B, hidden_size)
+gru(inputs, h_0)
+manual_result = manual_gru(inputs, h_0, gru)
+torch_result = gru(inputs, h_0)
+# manual_result == torch_result  # True
+
+output, h_n = manual_result
+# output[0, :, hidden_size:] = h_n[-1]  # True, 第一个元素的reverse output
+# output[-1, :, :hidden_size] = h_n[-2]  # True, 最后一个元素的output
+```
