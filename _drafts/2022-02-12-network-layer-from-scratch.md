@@ -108,7 +108,10 @@ output, h_n = gru(inputs)
 ```
 备注：
 - 默认情况下，`torch.nn.GRU` 层的输入应该是 `(L, B, C)` 形状的，其中 `B` 为批量大小，`L` 为序列长度，`C` 为每个 token 的特征维数。
-- 对于多层双向GRU，pytorch的计算逻辑参考：[pytorch论坛](https://discuss.pytorch.org/t/bidirectional-gru-with-multilayers-what-are-the-inputs-to-the-2nd-layer/51568)
+- 对于多层双向GRU，pytorch的计算逻辑参考：[pytorch论坛](https://discuss.pytorch.org/t/bidirectional-gru-with-multilayers-what-are-the-inputs-to-the-2nd-layer/51568)，pytorch的实现方式为第二种
+
+![Pytorch GRU 实现方式(右)](../assets/figures/network-from-scratch/GRU.jpeg)
+
 - 对于输出层，`h_n` 代表隐层的最终输出，其排布方式参考[pytorch论坛](https://discuss.pytorch.org/t/how-can-i-know-which-part-of-h-n-of-bidirectional-rnn-is-for-backward-process/3883)，为：
     ```python
     [
