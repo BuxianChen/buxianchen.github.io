@@ -28,6 +28,8 @@ hidden_block{
 <details>
 <summary>
 声音信号及其前处理
+
+MFCC 的计算, 参考[博客](https://haythamfayek.com/2016/04/21/speech-processing-for-machine-learning.html)
 </summary>
 </details>
 
