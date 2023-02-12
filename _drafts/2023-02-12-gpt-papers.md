@@ -1,25 +1,20 @@
 ---
 layout: post
-title: "(WIP)李沐论文精读笔记"
-date: 2022-06-19 23:31:04 +0800
+title: "(WIP)GPT-1，2，3，instructGPT，chatGPT"
+date: 2023-02-12 13:31:04 +0800
+labels: [limu, paper]
 ---
 
 ## 动机、参考资料、涉及内容
 
-参考资料
+见下文
 
-- 李沐读论文
+## GPT-1, GPT-2, GPT-3
 
-涉及内容
-
-- 也许会涉及多篇论文一起写成此博客
-- 可能会结合Pytorch等框架的具体实现来看（不确定是否要有这些内容）
-
-
-### GPT-1, GPT-2, GPT-3
-
-- 视频：https://www.bilibili.com/video/BV1AF411b7xQ
-- 论文：
+- [视频讲解](https://www.bilibili.com/video/BV1AF411b7xQ)
+- [GPT-1 论文: Improving Language Understanding by Generative Pre-Training](https://s3-us-west-2.amazonaws.com/openai-assets/research-covers/language-unsupervised/language_understanding_paper.pdf)
+- [GPT-2 论文: Language Models are Unsupervised Multitask Learners](https://d4mucfpksywv.cloudfront.net/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)
+- [GPT-3 论文: Language Models are Few-Shot Learners](https://arxiv.org/pdf/2005.14165.pdf)
 
 相关论文的时间线及参数量：
 
