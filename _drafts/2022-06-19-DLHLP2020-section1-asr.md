@@ -2,6 +2,7 @@
 layout: post
 title: "(WIP)DLHLP2020学习笔记1——语音识别"
 date: 2022-06-19 22:31:04 +0800
+labels: [speech]
 ---
 
 <style>
