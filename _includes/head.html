@@ -11,4 +11,7 @@
   {% if page.use_math %}
     {% include mathjax.html %}
   {% endif %}
+  {% if page.layout == "post" %}
+    {% include toc.html %}
+  {% endif %}
 </head>

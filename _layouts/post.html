@@ -16,8 +16,21 @@ layout: default
   </header>
 
   <div class="post-content e-content" itemprop="articleBody">
+    <div style="position: fixed; padding: 1em; right: 0; top: 0; width: 400px; height: 80%; overflow: auto;">
+      <div id="toc"></div>
+    </div>
     {{ content }}
   </div>
+
+  <script>
+    tocbot.init({
+      tocSelector: '#toc',
+      contentSelector: '.post-content.e-content',
+      headingSelector: 'h1, h2, h3, h4, h5',
+      hasInnerContainers: true,
+      collapseDepth: 3
+    });
+  </script>
 
   {%- if site.disqus.shortname -%}
     {%- include disqus_comments.html -%}
