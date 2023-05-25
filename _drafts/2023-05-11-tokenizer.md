@@ -389,7 +389,10 @@ tokenizer.no_truncation()
 
 ### add tokens, vocab
 
-`add_special_tokens` 与 `add_tokens`。见后文对 🤗 Transformers 中 tokenizer 的相关方法【待补充】
+`add_special_tokens` 与 `add_tokens`。
+
+- `Tokenizer.add_tokens(tokens: List[Union[AddedToken, str]])`: 如果加入的token不在原本的词表内, 则为其增加token_id, 并保证新增的token不会被切分开；如果加入的token在原本的词表内, 则什么都不做(即它在tokenize阶段仍有可能被切分开)
+- `Tokenizer.add_special_tokens(tokens: List[Union[AddedToken, str]])`: 如果加入的token不在原本的词表内, 则为其增加token_id, 并保证新增的token不会被切分开；如果加入的token在原本的词表内, 则不为其增加token_id, 但保证它不会被切分开
 
 ```python
 # 总是包含特殊token, 但可以控制是否加入add_token时增加的token
