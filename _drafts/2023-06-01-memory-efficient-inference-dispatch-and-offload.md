@@ -128,7 +128,7 @@ texts = tokenizer.batch_decode(output["sequences"])
 
 - `torch_dtype`, `model.config.torch_dtype`
 - `device_map`: None, auto, balanced, balanced_low_0, sequential, dict(...)
-- `offload_state_dict`: 
+- `offload_state_dict`: 如果为 False, 那么 device_map 为 cpu 的 tensor 会放在cpu上, 因此在加载过程中，cpu的内存要包含一份shard的state_dict与应该放在cpu上的model里的tensor。如果设置 `offload_state_dict` 为 True，那么对于 device_map 为 cpu 的 tensor 会先临时 offload 到 disk 上，这样子保证 cpu 的内存只要能装下最大的 shard 即可，在所有 shard 处理完成后，在将 offload 的 tensor 全部移回到 cpu 上（offload目录也将被删除）。由此 cpu 的内存只要超过最大shard、以及能装下放在 cpu 上的 model 的 tensor 即可，而不是需要能装下这两者之和。
 - `low_cpu_mem_usage`:
 - `_fast_init`:
 
