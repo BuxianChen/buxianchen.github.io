@@ -28,6 +28,7 @@ labels: [transformers]
 # requirements.txt
 torch >= 1.10.0
 transformers==4.29.2
+accelerate==0.19.0
 ```
 
 ```python
@@ -84,14 +85,14 @@ model = load_checkpoint_and_dispatch(
 )
 
 
-# method 2: (直接一步到位), 【待确认】
+# method 2: (直接一步到位)
 model = AutoModelForCausalLM.from_pretrained(
     pretrained_name_or_path,
     trust_remote_code=True,
     torch_dtype=torch.float16,
     # low_cpu_mem_usage=True,  # 设置了device_map后low_cpu_mem_usage会被默认设置为True
     max_memory=max_memory,
-    device_map="sequential",  # 似乎是必须设置为这个, 才会让max_memory生效
+    device_map="sequential",  # 似乎是必须设置为这个, 才会让max_memory生效（触发infer_auto_device_map的调用）
     offload_folder="offload",
     # offload_state_dict=True
 )
@@ -141,51 +142,103 @@ texts = tokenizer.batch_decode(output["sequences"])
 
 ## 主要API及功能
 
-```python
-import torch.nn as nn
-import torch
+### `PretrainedModel.from_pretrained`
 
-class FeedForward(nn.Module):
-    def __init__(self, num_layer, in_dim, hidden_dim):
-        super().__init__()
-        assert num_layer > 2
-        self.num_layer = num_layer
-        layers = nn.Sequential()
-        layers.append(nn.Linear(in_dim, hidden_dim))
-        for i in range(num_layer - 2):
-            layers.append(nn.Linear(hidden_dim, hidden_dim))
-        layers.append(nn.Linear(hidden_dim, in_dim))
-        self.layers = layers
-        self.activate = nn.ReLU()
-    def forward(self, x):
-        x = self.layers(x)
-        x = self.activate(x)
-        return x
+#### low_cpu_mem_usage 参数
+
+按照 [🤗 blog](https://huggingface.co/blog/accelerate-large-models) 的描述, low_cpu_mem_usage 为 False 以及 True 分别对应如下两种流程
+
+流程一：
+> 1. Create the model
+> 2. Load in memory its weights (in an object usually called state_dict)
+> 3. Load those weights in the created model
+> 4. Move the model on the device for inference
+
+流程二：
+> 1. Create an empty (e.g. without weights) model
+> 2. Decide where each layer is going to go (when multiple devices are available)
+> 3. Load in memory parts of its weights
+> 4. Load those weights in the empty model
+> 5. Move the weights on the device for inference
+> 6. Repeat from step 3 for the next weights until all the weights are loaded
+
+经过对源码的仔细分析, 将上述过程细化如下:
+
+low_cpu_mem_usage 的默认值为 False, 但当其他一些参数被设定的情况下, low_cpu_mem_usage 会被自动设置为 True
+
+- device_map 不为 None 时, low_cpu_mem_usage 会被自动设置为 True
+- ...
+
+
+**low_cpu_mem_usage=False**
+
+当模型的参数文件只有一个时, 与流程一的描述一致，因此在流程一的第 2 步结束时，cpu 中会有着两份权重
+
+- 初始化一个随机参数的模型（在CPU上）
+- load `pytorch_model.bin`
+- 将权重放入模型中（CPU上）
+
+当模型的参数文件有多个时（即所谓的 "shard checkpoint"）
+
+- 初始化一个随机参数的模型（在CPU上）
+- 逐个 `pytorch_model-0000x-of-0000y.bin` 文件, 并用于加载至模型（在CPU上）中, 每个文件 load 进模型后 load 的参数字典
+
+因此实际上只需要 “模型文件大小+1个shard参数” 的 CPU 内存。
+
+**low_cpu_mem_usage=True**
+
+当模型的参数文件只有一个时:
+
+- 初始化一个空模型(device="meta")
+- 如果模型的参数文件只有一个, 则通过 load `pytorch_model.bin` （load 在 cpu上）来获取保存的模型参数的 key 列表, 随后将 load 的参数字典先释放
+- 根据 device_map, max_memory, torch_dtype 确定每个参数最终需要存放的设备
+- 重新 load `pytorch_model.bin`（load 在 cpu 上）
+- 将权重放入相应的设备中。注意，这一步骤可能会有如下几种情形导致需要更多的内存资源
+    - 如果某个权重需要放置在 GPU 上，那么这份权重在 CPU 和 GPU 上都有一份
+    - 如果某个权重需要的 dtype 与 load 出来的权重不相同，那么这个权重需要存储两份
+    - 如果某个权重需要的 dtype 与 load 出来的权重相同，那么这个权重只会占用一份空间
     
-class Head(nn.Module):
-    def __init__(self, in_dim, num_class):
-        super().__init__()
-        self.out = nn.Linear(in_dim, num_class)
-        self.softmax = nn.Softmax(dim=-1)
-    def forward(self, x):
-        x = self.out(x)
-        probs = self.softmax(x)
-        return probs
+    注意在将模型的权重初始化好之前，load 的权重都不会被释放
+- 将 load 的权重一次性释放
 
-class ExampleModel(nn.Module):
-    def __init__(self, vocab_size, in_dim, num_layer, num_class):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, in_dim)
-        self.feed_forward = FeedForward(num_layer, in_dim, 4*in_dim)
-        self.head = Head(in_dim, num_class)
 
-    def forward(self, x):
-        # x: (B, L), out: (B, L, num_class)
-        out = self.embed(x)
-        out = self.feed_forward(out)
-        out = self.head(out)
-        return out
+当模型的参数文件有多个时
+
+- 初始化一个空模型(device="meta")
+- 如果模型的参数文件有多个, 则通过 load `pytorch_model.bin.index.json` 文件获取保存的模型参数的 key 列表
+- 根据 device_map, max_memory, torch_dtype 确定每个参数最终需要存放的设备
+- 每次 load 一个 `pytorch_model-0000x-of-0000y.bin` 文件, 初始化模型的一部分参数, 然后释放掉这一个 `pytorch_model-0000x-of-0000y.bin` 的参数文件
+
+
+以下是简化后的伪代码: `low_cpu_mem_usage=True`，且为单个权重文件的情形
+
+```python
+assert model.device == torch.device("meta")
+state_dict = torch.load("pytorch_model.bin")
+device_map = {
+    "layer1.weight": "cuda:0",
+    "layer1.bias": "cuda:0",
+    "layer2.weight": "cpu",
+    "layer2.bias": "cpu",
+}
+for name, param in state_dict.items():
+    # submodule = model.layer1 或 model.layer2
+    submodule = get_submodule(model, name)
+    tensor_name = name.split(".")[-1]
+    with torch.no_grad():
+        # 注意如果new_value的device与dtype与param相同时, 不需要额外占用内存空间
+        new_value = torch.tensor(param.to(device=device_map[name], dtype=...))
+        if is_buffer:
+            submodule._buffers[tensor_name] = new_value
+        else:
+            submodule._parameters[tensor_name] = new_value
+del state_dict
+gc.collect()
 ```
+
+#### _fast_init
+
+这个参数似乎作用并不算太大
 
 ### accelerate.utils.modeling.infer_auto_device_map
 
@@ -245,6 +298,52 @@ module_sizes: Dict[str, int] = compute_module_sizes(
 - `module_sizes`: 各层级的 Module/Parameter/Buffer 的内存占用大小, 见示例
 
 **例子**
+
+```python
+import torch.nn as nn
+import torch
+
+class FeedForward(nn.Module):
+    def __init__(self, num_layer, in_dim, hidden_dim):
+        super().__init__()
+        assert num_layer > 2
+        self.num_layer = num_layer
+        layers = nn.Sequential()
+        layers.append(nn.Linear(in_dim, hidden_dim))
+        for i in range(num_layer - 2):
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+        layers.append(nn.Linear(hidden_dim, in_dim))
+        self.layers = layers
+        self.activate = nn.ReLU()
+    def forward(self, x):
+        x = self.layers(x)
+        x = self.activate(x)
+        return x
+    
+class Head(nn.Module):
+    def __init__(self, in_dim, num_class):
+        super().__init__()
+        self.out = nn.Linear(in_dim, num_class)
+        self.softmax = nn.Softmax(dim=-1)
+    def forward(self, x):
+        x = self.out(x)
+        probs = self.softmax(x)
+        return probs
+
+class ExampleModel(nn.Module):
+    def __init__(self, vocab_size, in_dim, num_layer, num_class):
+        super().__init__()
+        self.embed = nn.Embedding(vocab_size, in_dim)
+        self.feed_forward = FeedForward(num_layer, in_dim, 4*in_dim)
+        self.head = Head(in_dim, num_class)
+
+    def forward(self, x):
+        # x: (B, L), out: (B, L, num_class)
+        out = self.embed(x)
+        out = self.feed_forward(out)
+        out = self.head(out)
+        return out
+```
 
 ```python
 from accelerate.utils.modeling import compute_module_sizes
