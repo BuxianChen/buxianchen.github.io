@@ -31,14 +31,31 @@ transformers==4.29.2
 accelerate==0.19.0
 ```
 
+写法一:
+
+```python
+pretrained_name_or_path = "./fnlp/moss-moon-003-sft"
+model = AutoModelForCausalLM.from_pretrained(
+    pretrained_name_or_path,
+    trust_remote_code=True,
+    torch_dtype=torch.float16,
+    # low_cpu_mem_usage=True,  # 设置了device_map后low_cpu_mem_usage会被默认设置为True
+    max_memory=max_memory,
+    device_map="sequential",  # 似乎是必须设置为这个, 才会让max_memory生效（触发infer_auto_device_map的调用）
+    offload_folder="offload",
+    # offload_state_dict=True
+)
+```
+
+写法二:
+
+
 ```python
 import torch
 from transformers import AutoTokenizer, AutoModelForCausualLM, AutoConfig
 from accelerate import infer_auto_device_map, init_empty_weights, load_checkpoint_and_dispatch
 
 pretrained_name_or_path = "./fnlp/moss-moon-003-sft"
-
-# method 1: 调用相关的辅助函数(有利于了解整个过程)
 config = AutoConfig.from_pretrained(path, trust_remote_code=True)
 with init_empty_weights():
     model = AutoModelForCausalLM.from_config(
@@ -63,41 +80,17 @@ device_map = infer_auto_device_map(
 )
 
 # 前面的两个步骤是为了获取合适的 device_map
-
-# 写法1: 待确认
-# model = AutoModelForCausalLM.from_pretrained(
-#     pretrained_name_or_path,
-#     trust_remote_code=True,
-#     # 在执行 cls(...) 之前, 会利用 torch.set_default_dtype(torch_dtype)全局设定默认浮点数类型
-#     torch_dtype=torch.float16,  
-#     device_map=device_map,
-#     offload_folder="offload",
-#     offload_state_dict=True,  # ??
-#     # low_cpu_memory_usage=True,  # 某些情况下会根据其他参数自动设定为True
-#     # _fast_init=True,  # 默认值为True
-# )
-
-# 写法2: 官网推荐的写法(https://huggingface.co/docs/accelerate/usage_guides/big_modeling)
+# https://huggingface.co/docs/accelerate/usage_guides/big_modeling
 model = load_checkpoint_and_dispatch(
     model,
     pretrained_name_or_path,
     device_map=device_map
 )
+```
 
+用法:
 
-# method 2: (直接一步到位)
-model = AutoModelForCausalLM.from_pretrained(
-    pretrained_name_or_path,
-    trust_remote_code=True,
-    torch_dtype=torch.float16,
-    # low_cpu_mem_usage=True,  # 设置了device_map后low_cpu_mem_usage会被默认设置为True
-    max_memory=max_memory,
-    device_map="sequential",  # 似乎是必须设置为这个, 才会让max_memory生效（触发infer_auto_device_map的调用）
-    offload_folder="offload",
-    # offload_state_dict=True
-)
-
-
+```python
 tokenizer = AutoTokenizer.from_pretrained(
     pretrained_name_or_path,
     trust_remote_code=True
@@ -125,11 +118,11 @@ texts = tokenizer.batch_decode(output["sequences"])
 - `PretrainedModel.from_pretrained(...)`
 - `AutoModelForXXX.from_config(...)`
 - `YYYModelForXXX._from_config(...)`
-- `accelerate.init_empty_weight(...)`
-- `accelerate.infer_auto_device_map(...)`
-- `accelerate.get_balanced_memory(...)`
-- `accelerate.dispatch_model(...)`
-- `accelerate.load_checkpoint_and_dispatch(...)`
+- `accelerate.init_empty_weight(...)`: 上下文管理器, 在上下文范围内, 修改 `nn.Module` 的 `register_parameter` 与 `register_buffer` 函数, 使得 `nn.Module` 中的 tensor 总是在 `torch.device("meta")` 上
+- `accelerate.get_balanced_memory(...)`: 在设定 `device_map` 为 `auto/balanced/balanced_low_0` 时, 得到 `max_memory` 字典
+- `accelerate.infer_auto_device_map(...)`: 根据 `max_memory` 字典得到 `device_map` 字典, 确定每个 module 或 parameter/buffer 的设备
+- `accelerate.dispatch_model(...)`: 根据 `device_map` 字典增加 `forward` 的 hook
+- `accelerate.load_checkpoint_and_dispatch(...)`: 并未在 🤗 transformer 被使用 (与 from_pretrain 有些重复代码, 猜想应该是代码还需要重构好)
 
 这些参数之间怎么配合的:
 
@@ -239,6 +232,25 @@ gc.collect()
 #### _fast_init
 
 这个参数似乎作用并不算太大
+
+#### device_map, max_memory, torch_dtype
+
+这两个参数一起决定每个参数的 device
+- `device_map: str/Dict`
+- `max_memory: None/Dict`
+
+逻辑如下: 
+- 如果 `device_map` 本身是 Dict 时, 则直接确定每个参数的 device
+- 如果 `device_map` 取值为字符串, 而 `max_memory=None`, 那么就【待确认】假定所有的 GPU 与 CPU 的内存都可以使用, 由此得到字典形式的 `max_memory`, 然后再根据 `device_map` 的具体取值来确定每个参数的 device:
+    - `auto/balanced`
+    - `balanced_low_0`
+    - `sequential`
+- 如果 `max_memory` 为 Dict, `device_map` 必须取值为 `"sequential"`
+
+这个参数以及config决定每个参数dtype
+- `torch_dtype: None/torch.dtype`
+
+
 
 ### accelerate.utils.modeling.infer_auto_device_map
 
@@ -506,4 +518,22 @@ module.__class__.__name__ in no_split_module_classes
 # 假设 module 是一个 torch.nn.modules.linear.Linear 层
 # module.__class__.__name__: "Linear"
 # no_split_module_classes: ["Linear", "T5Block"]
+```
+
+## 简化版实现
+
+```python
+def from_pretrain(cls, pretrained_name_or_path, device_map: Dict):
+    # 只考虑device_map含有gpu,cpu,disk, 且模型文件为shard的情形, 并假定load的参数的key与模型完全匹配
+    
+    config = ...
+    # step 1: 初始化空模型文件
+    with init_empty_weights():
+        model = cls(config, ...)
+    # step 2: 逐个load, 并初始化模型文件
+    ...
+    # step 3:
+    model.tie_weights()
+    model.eval()
+    # step 4: dispatch (add hook)
 ```
