@@ -31,7 +31,7 @@ transformers==4.29.2
 accelerate==0.19.0
 ```
 
-写法一:
+写法一: **注意: 本篇博客后续几乎全部的内容都是为了解释这一行初始化模型的代码**
 
 ```python
 pretrained_name_or_path = "./fnlp/moss-moon-003-sft"
@@ -43,7 +43,7 @@ model = AutoModelForCausalLM.from_pretrained(
     max_memory=max_memory,
     device_map="sequential",  # 似乎是必须设置为这个, 才会让max_memory生效（触发infer_auto_device_map的调用）
     offload_folder="offload",
-    # offload_state_dict=True
+    offload_state_dict=True  # cpu上的参数暂时offload, 再重新加载回cpu, 仅用于减少加载模型时的内存占用, 但加载速度会变慢一些
 )
 ```
 
@@ -279,6 +279,7 @@ device_map: Dict[str, torch.dtype] = infer_auto_device_map(
     ```python
     no_split_module_classes=["T5Block"]
     ```
+    具体逻辑可参考 `get_max_layer_size` 中的解释
 - `dtype`: 
     - None: 表示用 model 本身的每个参数的 dtype 进行计算内存大小
     - torch.float32: 对于 model 的每个 tensor, tensor 的 dtype 与传入的 `dtype` 的最小值计算内存大小
@@ -288,6 +289,24 @@ device_map: Dict[str, torch.dtype] = infer_auto_device_map(
     special_dtypes = {"feed_forward.layers.0.weight": torch.float16}
     ```
 **出参**
+
+- `device_map` 是一个字典, key 是子模块名或者是权重名(当 key 是子模块名时, 表明整个子模块都在同一设备上), value 是设备名(0/1/cpu/disk), 例子:
+    ```python
+    device_map = {
+        'embed': 0                              # Module, 包含权重 embed.weight
+        'feed_forward.layers.0': 0,             # Module, 包含权重 feed_forward.layers.0.weight 与 feed_forward.layers.0.bias
+        'feed_forward.layers.1.weight': 0,      # Parameter
+        'feed_forward.layers.1.bias': "cpu",    # Parameter
+        'feed_forward.layers.2': "cpu",         # Module
+        'feed_forward.layers.3': "disk",        # Module
+        'head': "disk"                          # Module, 包含 head.out Module
+    }
+    ```
+
+### accelerate.big_modeling.dispatch_model
+
+依赖的辅助 API 如下:
+- accelerate.utils.modeling.check_device_map
 
 ## 辅助API及功能
 
@@ -520,6 +539,170 @@ module.__class__.__name__ in no_split_module_classes
 # no_split_module_classes: ["Linear", "T5Block"]
 ```
 
+### accelerate.utils.modeling.check_device_map
+
+**signature**
+```python
+check_device_map(model: nn.Module, device_map)
+```
+
+**输入**
+
+略
+
+**输出**
+
+无, 只可能 raise 错误信息
+
+**内部逻辑**
+
+检查 `device_map` 是否会覆盖住 `model` 的所有参数, 注意: 这个函数**不检查** model 当前实际的参数位置是否与 device_map 一致。内部的实现逻辑是先获取 `all_names = model.state_dict().keys()`, 然后对于 `device_map` 中的每一个 key, 都在 `all_names` 将其排除(排除掉 key 以及以 `f"{key}."` 开头的键), 最后断言 `all_names` 为空列表。
+
+备注: 这个检查其实有一定的缺陷，例如 `device_map` 本身有可能“不合法”，例如：
+```python
+device_map = {"fc": 0, "fc.weight": 0, "fc.bias": "cpu"}
+```
+
+### accelerate.utils.offload.OffloadedWeightsLoader
+
+```python
+from collections.abc import Mapping
+class OffloadedWeightsLoader(Mapping):
+    def __init__(self,
+        state_dict,
+        save_folder=None,
+        index=None,
+        device=None
+    ):
+        self.all_keys = ... # list(state_dict.keys()) + index 中的键
+        self.device = device
+        ...
+    
+    def __getitem__(self, key):
+        if key in self.state_dict:
+            return self.state_dict[key]
+        else:
+            weight = np.memmap(weight_file, dtype, shape, mode="r")
+            weight = torch.tensor(weight)
+            return weight
+    
+    ...
+```
+
+说明: 从 `dispatch_model` 中对这个函数的使用里:
+
+- 当 main_device 为 gpu 时, 实例化参数 state_dict 为所有在 cpu 上的参数, save_folder 为 offload 文件夹, device 为 None
+- 当 main_device 为 cpu 时, 实例化参数 state_dict 为 None, save_folder 为 offload 文件夹, device 为 None
+
+`__getitem__` 方法:
+- 当 main_device 为 gpu 时, 无论原本的参数 offload 到 disk 还是本就在 cpu 上, 都会将 tensor 转移到 cpu 上返回, 已确认，原本在 disk 上的参数，返回的tensor占用内存
+- 当 main_device 为 cpu 时, 原本 offload 到 disk 上的参数会转移到 cpu 上返回, 已确认: 返回的tensor占用内存
+
+```python
+# 验证代码
+import numpy as np
+import psutil
+import torch
+nrows, ncols = 100000, 1000  # 需要占用大约 400MB
+
+def show_memory():
+    mem = psutil.virtual_memory()
+    print("Used", mem.used / 1024 / 1024, "MB")
+    print("Free", mem.free / 1024 / 1024, "MB")
+show_memory()                # Used: 602MB, Free: 2586MB
+# f = np.memmap('memmapped.dat', dtype=np.float32, mode='w+', shape=(nrows, ncols))
+# for i in range(nrows):
+#     f[i, :] = np.random.rand(ncols)
+# f.flush()
+# del f
+# show_memory()
+
+f = np.memmap('memmapped.dat', dtype=np.float32, mode='r', shape=(nrows, ncols))
+show_memory()                # Used: 602MB, Free: 2586MB
+tensor = torch.tensor(f)
+show_memory()                # Used: 985MB, Free: 2204MB, 说明构建 tensor 需要占用大量内存
+```
+
+### accelerte.hooks.attach_align_device_hook_on_blocks
+
+**signature**
+```python
+attach_align_device_hook_on_blocks(
+    module: nn.Module,
+    execution_device: Optional[Union[torch.device, Dict[str, torch.device]]] = None,
+    offload: Union[bool, Dict[str, bool]] = False,
+    weights_map: Mapping = None,
+    offload_buffers: bool = False,
+    module_name: str = "",
+    skip_keys: Optional[Union[str, List[str]]] = None,
+    preload_module_classes: Optional[List[str]] = None,
+)  # 给 module 加上 hook, 此函数本身无返回
+```
+
+`PretrainedModel.from_pretrain` 中调用 `dispath_model` 方法, 在内部调用 `attach_align_device_hook_on_blocks` 所传入的参数有如下说明：
+
+- main_device 为 gpu 时, 假设 `device_map` 如下
+    ```python
+    device_map = {
+        'embed': 0                              # Module, 包含权重 embed.weight
+        'feed_forward.layers.0': 0,             # Module, 包含权重 feed_forward.layers.0.weight 与 feed_forward.layers.0.bias
+        'feed_forward.layers.1.weight': 1,      # Parameter
+        'feed_forward.layers.1.bias': "cpu",    # Parameter
+        'feed_forward.layers.2': "cpu",         # Module
+        'feed_forward.layers.3': "disk",        # Module
+        'head': "disk"                          # Module, 包含 head.out Module
+    }
+    ```
+    offload_buffers、module_name、skip_keys、preload_module_classes 通常为默认值, 剩余其他参数为:
+    ```python
+    # 伪代码
+    zip(execution_device, offload) = {
+        'embed.weight': (0, False),  # 注意, key 必须是 tensor 的 name 
+        'feed_forward.layers.0.weight': (0, False),
+        'feed_forward.layers.0.bias': (0, False),
+        'feed_forward.layers.1.weight': (1, False),
+        # weight_map 包含以下的 tensor
+        'feed_forward.layers.1.bias': (0, True),   # 原本device_map在cpu上, execution_device 将其映射到main_device上
+        'feed_forward.layers.2.weight': (0, True), # 原本device_map在cpu上, execution_device 将其映射到main_device上
+        'feed_forward.layers.2.bias': (0, True),
+        'feed_forward.layers.3.weight': (0, True), # 原本device_map在disk上, execution_device 将其映射到main_device上
+        'feed_forward.layers.3.bias': (0, True),
+        "head.out.weight": (0, True),
+        "head.out.bias": (0, True)
+    }
+    ```
+
+- main_device 为 cpu 时, 假设 `device_map` 如下
+    ```python
+    device_map = {
+        'embed': "cpu"                         # Module, 包含权重 embed.weight
+        'feed_forward.layers.0': "cpu",        # Module, 包含权重 feed_forward.layers.0.weight 与 feed_forward.layers.0.bias
+        'feed_forward.layers.1.weight': "cpu", # Parameter
+        'feed_forward.layers.1.bias': "cpu",   # Parameter
+        'feed_forward.layers.2': "cpu",        # Module
+        'feed_forward.layers.3': "disk",       # Module
+        'head': "disk"                         # Module, 包含 head.out Module
+    }
+    ```
+    offload_buffers、module_name、skip_keys、preload_module_classes 通常为默认值, 剩余其他参数为:
+    ```python
+    # 伪代码
+    zip(execution_device, offload) = {
+        'embed.weight': ("cpu", False),  # 注意, key 必须是 tensor 的 name 
+        'feed_forward.layers.0.weight': ("cpu", False),
+        'feed_forward.layers.0.bias': ("cpu", False),
+        'feed_forward.layers.1.weight': ("cpu", False),
+        'feed_forward.layers.1.bias': ("cpu", False),
+        'feed_forward.layers.2.weight': ("cpu", False),
+        'feed_forward.layers.2.bias': ("cpu", False),
+        # weight_map 包含以下的 tensor
+        'feed_forward.layers.3.weight': ("cpu", True), # 原本device_map在disk上, execution_device 将其映射到main_device上
+        'feed_forward.layers.3.bias': ("cpu", True),
+        "head.out.weight": ("cpu", True),
+        "head.out.bias": ("cpu", True)
+    }
+    ```
+
 ## 简化版实现
 
 ```python
@@ -532,6 +715,7 @@ def from_pretrain(cls, pretrained_name_or_path, device_map: Dict):
         model = cls(config, ...)
     # step 2: 逐个load, 并初始化模型文件
     ...
+    # 此时, 模型的权重的device, 一部分在gpu上, 一部分在cpu上, 一部分仍为 meta
     # step 3:
     model.tie_weights()
     model.eval()
