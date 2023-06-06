@@ -703,6 +703,75 @@ attach_align_device_hook_on_blocks(
     }
     ```
 
+### `torch.nn.Module` 的 hook 机制与 `torch.nn.Module.__call__`
+
+
+[torch.nn.Module 源码](https://pytorch.org/docs/stable/_modules/torch/nn/modules/module.html), 由于这里我们只关注 forward hook, 所以简化如下:
+
+```python
+class Module:
+    def __call__(self, *args, **kwargs):
+        for hook_id, hook in (*_global_forward_pre_hooks.items(), *self._forward_pre_hooks.items()):
+            if hook_id in self._forward_pre_hooks_with_kwargs:
+                result = hook(self, args, kwargs)  # type: ignore[misc]
+                if result is not None:
+                    args, kwargs = result
+            else:
+                result = hook(self, args)
+                if result is not None:
+                    if not isinstance(result, tuple):
+                        result = (result,)
+                    args = result
+        result = forward(*args, **kwargs)
+        for hook_id, hook in (*_global_forward_hooks.items(), *self._forward_hooks.items()):
+            if hook_id in self._forward_hooks_with_kwargs:
+                hook_result = hook(self, args, kwargs, result)
+            else:
+                hook_result = hook(self, args, result)
+
+            if hook_result is not None:
+                result = hook_result
+        return result
+```
+
+简言之, 对于 `torch.nn.Module` 的两类 forward hook 而言, 有如下说明, 假设 `result=forward(*args, **kwargs)`
+
+- 只有在调用 `__call__` 时, hook 才会起作用, 直接调用 `forward` hook 不会起作用
+- forward_pre_hook 的出入参可以是如下（注意 `args` 和 `kwargs` **可能会被修改**）:
+  - 入参: 只接收一个元组形式的参数 `args`, 出参可以是 None, tuple, 其他(最终转化为单个元素的tuple), 如果出参为 tuple, 则下一个 hook 的入参将使用当前 hook 的出参
+  - 入参: 接收元组形式的参数 `args` 和字典形式参数 `kwargs`, 出参可以是 None, (tuple, dict), 如果出参为 (tuple, dict), 则下一个 hook 的入参将使用当前 hook 的出参
+- forward_hook 的出入参可以是如下（注意 `args` 和 `kwargs` **不会被修改**）:
+  - 入参: 一个元组形式的参数 `args` 和 `result`, 出参可以是 None, 其他, 如果出参不为 None, 则下一个 hook 所使用的 `result` 入参将使用当前 hook 的出参
+  - 入参: 一个元组形式的参数 `args`、字典形式参数 `kwargs` 和 `result`, 出参可以是 None, 其他, 如果出参不为 None, 则下一个 hook 所使用的 `result` 入参将使用当前 hook 的出参
+
+
+注册 hook 的方式为:
+```python
+register_forward_pre_hook(
+    self,
+    hook: Union[
+        Callable[[T, Tuple[Any, ...]], Optional[Any]],
+        Callable[[T, Tuple[Any, ...], Dict[str, Any]], Optional[Tuple[Any, Dict[str, Any]]]],
+    ],
+    *,
+    prepend: bool = False,  # 如果为 True, 则把优先级提到最高, 最先执行
+    with_kwargs: bool = False  # hook的入参是否有关键字参数
+)
+
+def register_forward_hook(
+    self,
+    hook: Union[
+        Callable[[T, Tuple[Any, ...], Any], Optional[Any]],
+        Callable[[T, Tuple[Any, ...], Dict[str, Any], Any], Optional[Any]],
+    ],
+    *,
+    prepend: bool = False,
+    with_kwargs: bool = False,
+)
+```
+
+示例【待补充】
+
 ## 简化版实现
 
 ```python
