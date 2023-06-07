@@ -303,6 +303,34 @@ device_map: Dict[str, torch.dtype] = infer_auto_device_map(
     }
     ```
 
+**例子**
+
+```python
+class ModelA(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.a = nn.Parameter(torch.rand(1000, 1000))
+        self.b = nn.Parameter(torch.rand(1000, 1000))
+        self.layer = nn.Linear(1000, 1000)
+    def forward(self, x):
+        pass
+
+print(infer_auto_device_map(ModelA(), max_memory={"cpu": 1000*1000*6}))  # {'': 'disk'}
+print(infer_auto_device_map(ModelA(), max_memory={"cpu": 1000*1000*8+3999}))  # {'': 'disk'}
+print(infer_auto_device_map(ModelA(), max_memory={"cpu": 1000*1000*8+4000}))  # {'a': 'cpu', 'b': 'disk', 'layer': 'disk'}
+print(infer_auto_device_map(ModelA(), max_memory={"cpu": 1000*1000*10}))  # {'a': 'cpu', 'b': 'disk', 'layer': 'disk'}
+```
+
+注意这里第一个例子里, 按通常的想法, 至少 `self.a` 应该可以放在 cpu 上, 但这里要考虑 offload 的参数 `self.b` 和 `self.layer` 在运算时需要重新 load 回 cpu, 因此如果需要将 `self.a` 保留在 cpu 上, 应该至少要这么多内存:
+
+```python
+1000*1000*4 # 存放 self.a
++ max(
+    1000*1000*4,  # 运算时需要临时加载 self.b
+    1000*1000*4 + 1000*4  # 运算时需要临时加载 self.layer
+)
+```
+
 ### accelerate.big_modeling.dispatch_model
 
 依赖的辅助 API 如下:
@@ -655,21 +683,18 @@ attach_align_device_hook_on_blocks(
     ```
     offload_buffers、module_name、skip_keys、preload_module_classes 通常为默认值, 剩余其他参数为:
     ```python
-    # 伪代码
     zip(execution_device, offload) = {
-        'embed.weight': (0, False),  # 注意, key 必须是 tensor 的 name 
-        'feed_forward.layers.0.weight': (0, False),
-        'feed_forward.layers.0.bias': (0, False),
-        'feed_forward.layers.1.weight': (1, False),
-        # weight_map 包含以下的 tensor
-        'feed_forward.layers.1.bias': (0, True),   # 原本device_map在cpu上, execution_device 将其映射到main_device上
-        'feed_forward.layers.2.weight': (0, True), # 原本device_map在cpu上, execution_device 将其映射到main_device上
-        'feed_forward.layers.2.bias': (0, True),
-        'feed_forward.layers.3.weight': (0, True), # 原本device_map在disk上, execution_device 将其映射到main_device上
-        'feed_forward.layers.3.bias': (0, True),
-        "head.out.weight": (0, True),
-        "head.out.bias": (0, True)
+        "": 0,                                  # 这个是 dispath 函数在调用 attach_align_device_hook_on_blocks 之前追加的一个键
+        'embed': (0, False)                         # Module, 包含权重 embed.weight
+        'feed_forward.layers.0': (0, False),        # Module, 包含权重 feed_forward.layers.0.weight 与 feed_forward.layers.0.bias
+        'feed_forward.layers.1.weight': (1, False), # Parameter
+        # weight_map 包含以下模块里的所有 tensor, 注意 weight_map 的键是 tensor name
+        'feed_forward.layers.1.bias': (0, True),    # Parameter, 原本device_map在cpu上, execution_device 将其映射到main_device上
+        'feed_forward.layers.2': (0, True),         # Module
+        'feed_forward.layers.3': (0, True),         # Module
+        'head': (0, True)                           # Module, 原本device_map在disk上, execution_device 将其映射到main_device上
     }
+    weights_map = OffloadedWeightsLoader(cpu_state_dict, offload_folder)
     ```
 
 - main_device 为 cpu 时, 假设 `device_map` 如下
@@ -686,21 +711,18 @@ attach_align_device_hook_on_blocks(
     ```
     offload_buffers、module_name、skip_keys、preload_module_classes 通常为默认值, 剩余其他参数为:
     ```python
-    # 伪代码
     zip(execution_device, offload) = {
-        'embed.weight': ("cpu", False),  # 注意, key 必须是 tensor 的 name 
-        'feed_forward.layers.0.weight': ("cpu", False),
-        'feed_forward.layers.0.bias': ("cpu", False),
-        'feed_forward.layers.1.weight': ("cpu", False),
-        'feed_forward.layers.1.bias': ("cpu", False),
-        'feed_forward.layers.2.weight': ("cpu", False),
-        'feed_forward.layers.2.bias': ("cpu", False),
-        # weight_map 包含以下的 tensor
-        'feed_forward.layers.3.weight': ("cpu", True), # 原本device_map在disk上, execution_device 将其映射到main_device上
-        'feed_forward.layers.3.bias': ("cpu", True),
-        "head.out.weight": ("cpu", True),
-        "head.out.bias": ("cpu", True)
+        "": "cpu",                                  # 这个是 dispath 函数在调用 attach_align_device_hook_on_blocks 之前追加的一个键
+        'embed': ("cpu", False)                         # Module, 包含权重 embed.weight
+        'feed_forward.layers.0': ("cpu", False),        # Module, 包含权重 feed_forward.layers.0.weight 与 feed_forward.layers.0.bias
+        'feed_forward.layers.1.weight': ("cpu", False), # Parameter
+        'feed_forward.layers.1.bias': ("cpu", True),    # Parameter, 原本device_map在cpu上, execution_device 将其映射到main_device上
+        # weight_map 包含以下模块里的所有 tensor, 注意 weight_map 的键是 tensor name
+        'feed_forward.layers.2': ("cpu", True),         # Module
+        'feed_forward.layers.3': ("cpu", True),         # Module
+        'head': ("cpu", True)                           # Module, 原本device_map在disk上, execution_device 将其映射到main_device上
     }
+    weights_map = OffloadedWeightsLoader(offload_folder)
     ```
 
 ### `torch.nn.Module` 的 hook 机制与 `torch.nn.Module.__call__`
@@ -771,6 +793,20 @@ def register_forward_hook(
 ```
 
 示例【待补充】
+
+
+### accelerate.hooks.ModelHook, SequentialHook, add_hook_to_module, remove_hook_from_module
+
+使用 accelerate 的 hook 机制, 会操纵原本的 `nn.Module` 的一些属性/方法
+
+- `model._hf_hook: ModelHook`
+- `model._old_forward: Callable`
+- `model.forward`
+
+### accelerate.hooks.AlignDevicesHook
+
+在 `init_hook` 时, 将 module 中的所有参数全部放到execution_device或者全部放到meta上
+
 
 ## 简化版实现
 
