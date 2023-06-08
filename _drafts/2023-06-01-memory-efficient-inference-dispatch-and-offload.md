@@ -252,7 +252,14 @@ gc.collect()
 
 
 
-### accelerate.utils.modeling.infer_auto_device_map
+### accelerate.utils.modeling.infer_auto_device_map【逻辑比较复杂, 且有一些bug】
+
+依赖的辅助 API 如下:
+
+- accelerate.utils.modeling.compute_module_sizes
+- accelerate.utils.modeling.get_max_layer_size
+- accelerate.utils.modeling.find_tied_parameters, retie_parameters
+
 
 **signature**
 
@@ -335,6 +342,12 @@ print(infer_auto_device_map(ModelA(), max_memory={"cpu": 1000*1000*10}))  # {'a'
 
 依赖的辅助 API 如下:
 - accelerate.utils.modeling.check_device_map
+- accelerate.utils.offload.OffloadedWeightsLoader, accelerate.utils.offload.PrefixDataset
+- accelerate.hooks.attach_align_device_hook_on_blocks
+    - accelerate.hooks.ModelHook, SequentialHook, AlignDeviceHook
+    - accelerate.hooks.add_hook_to_module, (remove_hook_from_module)
+    - accelerate.hooks.attach_align_device_hook, attach_execution_device_hook
+
 
 ## 辅助API及功能
 
@@ -553,7 +566,7 @@ find_tied_parameters(model_a)  # 返回为[['layer1.weight', 'layer2.weight'], [
 ```
 
 
-### get_max_layer_size
+### accelerate.utils.modeling.get_max_layer_size
 
 
 **内部逻辑**
@@ -651,7 +664,7 @@ tensor = torch.tensor(f)
 show_memory()                # Used: 985MB, Free: 2204MB, 说明构建 tensor 需要占用大量内存
 ```
 
-### accelerte.hooks.attach_align_device_hook_on_blocks
+### accelerte.hooks.attach_align_device_hook_on_blocks【里面的递归逻辑后面再补充】
 
 **signature**
 ```python
@@ -795,7 +808,85 @@ def register_forward_hook(
 示例【待补充】
 
 
-### accelerate.hooks.ModelHook, SequentialHook, add_hook_to_module, remove_hook_from_module
+### accelerate.hooks.ModelHook, SequentialHook
+
+
+### accelerate.hooks.AlignDevicesHook
+
+
+```python
+class AlignDevicesHook:
+    def __init__(
+        self,
+        execution_device: Optional[Union[int, str, torch.device]] = None,
+        offload: bool = False,
+        io_same_device: bool = False,
+        weights_map: Optional[Mapping] = None,  # 通常情况会指定
+        offload_buffers: bool = False,
+        place_submodules: bool = False,
+        # skip_keys: Optional[Union[str, List[str]]] = None,  # accelerate 0.20 增加的参数, 为简单起见忽略
+    ):
+
+    def init_hook(self, module):
+        pass
+```
+
+首先重复一下 `OffloadedWeightsLoader` 的内容: `self.weights_map` 只包含需要 offload 的参数: 如果 main_device 为 gpu, `self.weights_map` 参数既包含 cpu 上的参数, 也包含 disk 上的参数; 如果 main_device 为 cpu, 则 `self.device_map` 只包含 disk 上的参数. 在执行 `self.weights_map["tensor_name"]` 时, 如果原本的参数在 cpu 上保存, 则直接取出进行返回, 如果原本的参数是使用 `np.memmap` 保存在 disk 上, 则通过 `np.memmap` load 回 cpu, 然后再转化为 cpu 上的 tensor 进行返回, 总之返回的总是 cpu 上的 tensor.
+
+
+要理解其余参数的含义, 这里先对 `nn.Module` 中的“tensor”进行澄清：
+
+```python
+class SubModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.c = nn.Parameter(torch.rand(40, 40))
+        # 这种表示不持久化保存的buffer, 使用通常torch.save(model.state_dict(), "x.pth")将不会保存这部分buffer
+        self.register_buffer("d", torch.ones(10, 10), persistent=False)
+
+class Model(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.a = nn.Parameter(torch.rand(100, 100))
+        self.register_buffer("b", torch.rand(50, 50))
+        self.layer = SubModule()
+
+model = Model()
+model.state_dict()                          # 包含 a, b, layer.c
+list(model.named_parameters())              # 包含 a, layer.c
+list(model.named_parameters(recurce=False)) # 包含 a
+list(model.named_buffers())                 # 包含 b, layer.d
+list(model.named_buffers(recurse=False))    # 包含 b
+```
+
+总的来说, 一个module的参数包含如下几类(后面的描述约定采用这些术语)
+
+- parameter
+- buffer
+- child
+
+**init_hook**
+
+`init_hook` 的入参 `module` 应该与 `self.weights_map`、`self.offload_buffers`、`self.offload`、`self.place_submodules` 参数匹配 (感觉这里的API设计确实不太合理), 也就是说 `module` 里包含不存放在 meta device 上的参数与 `self.weights_map` 合并起来应该要包含全部的参数:
+
+`self.offload=False`: 则将 parameter/buffer 移动到 `self.execution_device` 上, 如果 `self.place_submodules=True`, 则递归将 child 的 parameter/buffer 也移动到 `self.execution_device` 上
+
+`self.offload=True`: `self.place_submodules=True` 表示如下操作也对 child 递归进行
+    - 对buffer的处理: 如果 `self.offload_buffers=True`, 则表明 buffer 也被包含在 `self.device_map` 里, 同时意味着 `module` 里的 buffer 在 meta device 上, 此时将 `module` 的 buffer 移至 meta device 上; 如果 `self.offload_buffers=False`, 则表明 buffer 不被包含在 `self.device_map` 里, 同时意味着 `module` 里的 buffer 存放了实际数据, 此时将 `module` 的 buffer 移至 `self.execution_device` 上
+    - 对parameter的处理: 将 `module` 的 parameter 移至 meta device 上
+
+**pre_forward/post_forward**
+
+`self.io_same_device=True`: 将入参先转移到 `self.execution_device` 上, 然后递归/不递归地将 `module` 的 parameter/buffer 全部转移到 `self.execution_device`, 然后正常进行 `forward`, 然后将所有需要 offload 的参数全部转移到 meta device 上, 最后将出参转移到跟入参相同的 device 上
+
+`self.io_same_device=False`: 将入参先转移到 `self.execution_device` 上, 然后递归/不递归地将 `module` 的 parameter/buffer 全部转移到 `self.execution_device`, 然后正常进行 `forward`, 然后将所有需要 offload 的参数全部转移到 meta device 上, 最后出参保留在 `self.execution_device` 上
+
+**detach_hook**
+
+将 `module` 的参数的 device 全部恢复至 `init_hook` 之前的状态
+
+
+### accelerate.hooks.add_hook_to_module, remove_hook_from_module
 
 使用 accelerate 的 hook 机制, 会操纵原本的 `nn.Module` 的一些属性/方法
 
@@ -803,9 +894,7 @@ def register_forward_hook(
 - `model._old_forward: Callable`
 - `model.forward`
 
-### accelerate.hooks.AlignDevicesHook
-
-在 `init_hook` 时, 将 module 中的所有参数全部放到execution_device或者全部放到meta上
+### accelerate.hooks.attach_align_device_hook, attach_execution_device_hook
 
 
 ## 简化版实现
