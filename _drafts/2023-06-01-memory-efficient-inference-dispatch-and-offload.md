@@ -18,9 +18,13 @@ labels: [transformers]
 
 涉及内容
 
-- 使用方法【样例】
+- 使用方法
 - 文档补充：某些辅助函数官方文档缺失，某些对外API的参数说明不明确
 - 源码分析
+
+## 简介
+
+针对大模型的**推理过程** 🤗 Transformer/accelerate 引入了一些 API, 使得大模型能在资源有限的服务器(即显存有限,内存有限)上运行, 运行的唯一的要求是有足够的磁盘空间以及时间, 注意模型仍然是在 raw pytorch 的环境下运行的, 而非通过量化及并行技术进行节省显存以及加速
 
 ## 样例代码
 
@@ -35,6 +39,7 @@ accelerate==0.19.0
 
 ```python
 pretrained_name_or_path = "./fnlp/moss-moon-003-sft"
+max_memory = {0: "12GB", 1: "20GB", "cpu": "20GB"}
 model = AutoModelForCausalLM.from_pretrained(
     pretrained_name_or_path,
     trust_remote_code=True,
@@ -63,7 +68,7 @@ with init_empty_weights():
         # 在执行 cls(...) 之前, 会利用 torch.set_default_dtype(torch_dtype)全局设定默认浮点数类型
         torch_dtype=torch.float16,
         trust_remote_code=True)
-# !!!这一步是必须的!!!
+# !!!这一步是必须的!!!(empty weight model 也可以tie weight?)
 model.tie_weights()
 
 max_memory = {
@@ -112,6 +117,40 @@ output = model.generate(
 texts = tokenizer.batch_decode(output["sequences"])
 ```
 
+## <font color=red>原理总结</font>
+
+这里先对上述代码的原理做一个介绍, 不想太过深入地学习源码只需要看这里的描述或者参考 [官方文档]([https://huggingface.co/docs/accelerate/v0.19.0/en/usage_guides/big_modeling]) 和 [官方博客](https://huggingface.co/blog/accelerate-large-models) 即可, 在上述 `from_pretrained` 的过程中, 实际上发生了如下几件事情:
+
+- 首先初始化一个空模型
+  
+  注意这个空模型没有随机初始化的权重, 技术上来说, 实现上本质来源于 `pytorch>=1.9.0` 可以将 tensor 的 device 设置为 `torch.device("meta")`, 🤗 accelerate 引入了一个上下文管理器 `init_empty_weights`, 在上下文范围内, 将 `nn.Module.register_parameter` 与 `nn.Module.register_buffer` 做了替换, 使得所有模型的所有 parameter 与 buffer 的设备都被设置为了 `torch.device("meta")`
+  ```python
+  with init_empty_weights():
+    model = cls(config, *model_args, **model_kwargs)
+  ```
+- 然后根据 model 中每个参数的 dtype 以及 shape 可以估算每个参数所需要的存储空间, 依据给定的 max_memory 决定每个模型的每个参数应该放在哪个 device 上, 即得到 device_map
+  
+  这部分涉及到的 API 主要是 🤗 accelerate 的 `infer_auto_device_map`, 以及所依赖的 `compute_module_sizes`, `get_max_layer_size` 等
+
+- 接下来将参数文件逐个加载进cpu, 并将参数逐个放置在上一步骤所确定的设备上
+
+  这一步骤主要涉及到一些小细节, 首先要保证 cpu 的内存能装下最大的参数文件, 即 `state_dict=torch.load("pytorch_model-00001-of-00004.bin")`, 然后将 `state_dict` 放置到 gpu/cpu/disk 上: 如果需要放置在 gpu 上, 则需要拷贝一份 tensor 至 gpu, 如果需要放置在 cpu 上, 实际上不会发生拷贝, 内存不会增加, 仅仅是 tensor 的引用计数加 1, 如果需要放置在 disk 上, 则会利用到 `numpy.memmap` 的功能将数据保存在硬盘上. 为了进一步节省 cpu 内存(`offload_state_dict=True`), 可以先将本应该放置在 cpu 上的 tensor 也先放置在硬盘上, 并记录好每个 tensor 与相应的硬盘文件的映射关系, 等全部的参数文件处理完成后, 再重新将本应该放在 cpu 上的 tensor 加载回 cpu, 并删除掉这部分的硬盘文件
+
+- 修改 model 及其子模块的 forward 函数, 保证每个子模块在使用 forward 函数进行运算时, 相应的 tensor 操作数(输入及模型的权重)都在相同的设备上
+
+  这一步骤的实现所使用的细节在官方文档中被称为 hook, 但个人认为这与 torch.nn.Module 中的 hook 还是有一定的区别, 称为修改 forward 函数可能更为准确. 需要注意的细节有: 首先会确定一个所谓的 main_device, main_device 一般为某一个 gpu.
+
+  - 在进行运算前: 对于模型中原本在 disk 上保存的 tensor, 在进行运算时, 会首先将 disk 上的数据读入 cpu, 然后将其转移到 main_device 上; 对于模型中原本在 cpu 上保存的 tensor, 则将其转移到 main_device 上; 对于模型中原本就在 gpu 上的 tensor, 则不进行 tensor 的设备转移. 然后将输入的 tensor 也转移到相匹配的 gpu 上
+  - 运算: 即普通的 CUDA 上的算子运算
+  - 运算结束后: 对于模型中原本在 disk 上保存的 tensor, 则重新将 tensor 从 main_device 转移回 cpu 再保存会 disk, 对于模型中原本在 cpu 上保存的 tensor, 则 tensor 从 main_device 转移回 cpu, 对于模型中原本就在 gpu 上的 tensor, 则不进行 tensor 的设备转移.
+
+  另一个细节是: 上述的 tensor 转移过程每次的转移范围是每次转移一个 submodule 下所有直接的 paramter 与 buffer. submodule 里的 submodule 的 paramter 和 buffer 则会在触发它本身的 forward 函数时被转移设备
+
+  上述步骤所涉及的 API 主要是 🤗 accelerate 的 `dispatch_model`, 以及所依赖的 `OffloadedWeightsLoader`, `AlignDeviceHook` 等
+
+通过以上步骤, 🤗 实现了将大模型的**推理过程**运行在资源有限的设备的目标
+
+其他细节: 对于存在 tie_weight 情况的模型, 对这部分参数做了一些额外的特殊处理
 
 备注：【以下API间的关系有些混乱，待研究】
 
@@ -122,7 +161,7 @@ texts = tokenizer.batch_decode(output["sequences"])
 - `accelerate.get_balanced_memory(...)`: 在设定 `device_map` 为 `auto/balanced/balanced_low_0` 时, 得到 `max_memory` 字典
 - `accelerate.infer_auto_device_map(...)`: 根据 `max_memory` 字典得到 `device_map` 字典, 确定每个 module 或 parameter/buffer 的设备
 - `accelerate.dispatch_model(...)`: 根据 `device_map` 字典增加 `forward` 的 hook
-- `accelerate.load_checkpoint_and_dispatch(...)`: 并未在 🤗 transformer 被使用 (与 from_pretrain 有些重复代码, 猜想应该是代码还需要重构好)
+- `accelerate.load_checkpoint_and_dispatch(...)`: 并未在 🤗 Transformer 被使用 (与 from_pretrain 有些重复代码, 猜想应该是代码还需要重构好)
 
 这些参数之间怎么配合的:
 
@@ -250,7 +289,13 @@ gc.collect()
 这个参数以及config决定每个参数dtype
 - `torch_dtype: None/torch.dtype`
 
+### accelerate.big_modeling.init_empty_weights
 
+上下文管理器
+
+```python
+init_empty_weights(include_buffers: bool = False)
+```
 
 ### accelerate.utils.modeling.infer_auto_device_map【逻辑比较复杂, 且有一些bug】
 
