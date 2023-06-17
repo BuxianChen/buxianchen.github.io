@@ -802,7 +802,7 @@ class Module:
                     if not isinstance(result, tuple):
                         result = (result,)
                     args = result
-        result = forward(*args, **kwargs)
+        result = self.forward(*args, **kwargs)
         for hook_id, hook in (*_global_forward_hooks.items(), *self._forward_hooks.items()):
             if hook_id in self._forward_hooks_with_kwargs:
                 hook_result = hook(self, args, kwargs, result)
@@ -818,15 +818,16 @@ class Module:
 
 - 只有在调用 `__call__` 时, hook 才会起作用, 直接调用 `forward` hook 不会起作用
 - forward_pre_hook 的出入参可以是如下（注意 `args` 和 `kwargs` **可能会被修改**）:
-  - 入参: 只接收一个元组形式的参数 `args`, 出参可以是 None, tuple, 其他(最终转化为单个元素的tuple), 如果出参为 tuple, 则下一个 hook 的入参将使用当前 hook 的出参
-  - 入参: 接收元组形式的参数 `args` 和字典形式参数 `kwargs`, 出参可以是 None, (tuple, dict), 如果出参为 (tuple, dict), 则下一个 hook 的入参将使用当前 hook 的出参
+  - 入参: **除去module本身外**, 只接收一个元组形式的参数 `args`, 出参可以是 None, tuple, 其他(最终转化为单个元素的tuple), 如果出参为 tuple, 则下一个 hook 的入参将使用当前 hook 的出参
+  - 入参: **除去module本身外**, 接收元组形式的参数 `args` 和字典形式参数 `kwargs`, 出参可以是 None, (tuple, dict), 如果出参为 (tuple, dict), 则下一个 hook 的入参将使用当前 hook 的出参
 - forward_hook 的出入参可以是如下（注意 `args` 和 `kwargs` **不会被修改**）:
-  - 入参: 一个元组形式的参数 `args` 和 `result`, 出参可以是 None, 其他, 如果出参不为 None, 则下一个 hook 所使用的 `result` 入参将使用当前 hook 的出参
-  - 入参: 一个元组形式的参数 `args`、字典形式参数 `kwargs` 和 `result`, 出参可以是 None, 其他, 如果出参不为 None, 则下一个 hook 所使用的 `result` 入参将使用当前 hook 的出参
+  - 入参: **除去module本身外**, 一个元组形式的参数 `args` 和 `result`, 出参可以是 None, 其他, 如果出参不为 None, 则下一个 hook 所使用的 `result` 入参将使用当前 hook 的出参
+  - 入参: **除去module本身外**, 一个元组形式的参数 `args`、字典形式参数 `kwargs` 和 `result`, 出参可以是 None, 其他, 如果出参不为 None, 则下一个 hook 所使用的 `result` 入参将使用当前 hook 的出参
 
 
 注册 hook 的方式为:
 ```python
+# 注意: 老版本的pytorch(例如torch==1.12.0), 没有with_kwargs参数, 即不能使用关键字参数
 register_forward_pre_hook(
     self,
     hook: Union[
@@ -850,7 +851,36 @@ def register_forward_hook(
 )
 ```
 
-示例【待补充】
+示例
+
+```python
+# 这个例子适合新老版本torch
+import torch.nn as nn
+import torch
+class MLP(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer1 = nn.Linear(20, 10)
+        self.act = nn.ReLU()
+        self.layer2 = nn.Linear(10, 5)
+    def forward(self, x):
+        x = self.layer1(x)
+        x = self.act(x)
+        x = self.layer2(x)
+        return x
+model = MLP()
+for name, module in model.named_modules():
+    module.register_forward_pre_hook(
+        lambda self, args: print(self.__class__.__name__, len(args), type(args), args[0].shape),
+        )
+x = torch.rand((4, 20))
+y = model(x)
+# 输出:
+# MLP 1 <class 'tuple'> torch.Size([4, 20])
+# Linear 1 <class 'tuple'> torch.Size([4, 20])
+# ReLU 1 <class 'tuple'> torch.Size([4, 10])
+# Linear 1 <class 'tuple'> torch.Size([4, 10])
+```
 
 
 ### accelerate.hooks.ModelHook, SequentialHook
