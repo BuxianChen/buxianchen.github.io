@@ -50,6 +50,7 @@ model = AutoModelForCausalLM.from_pretrained(
     offload_folder="offload",
     offload_state_dict=True  # cpu上的参数暂时offload, 再重新加载回cpu, 仅用于减少加载模型时的内存占用, 但加载速度会变慢一些
 )
+# device_map 的实际内容可由 model.hf_device_map 获取
 ```
 
 写法二:
@@ -989,4 +990,109 @@ def from_pretrain(cls, pretrained_name_or_path, device_map: Dict):
     model.tie_weights()
     model.eval()
     # step 4: dispatch (add hook)
+```
+
+## 其他有用的 API
+
+### `accelerate.big_modeling.cpu_offload_with_hook`, `accelerate.hooks.CpuOffload`, `accelerate.hooks.UserCpuOffloadHook`
+
+注意前面提到的扮演重要角色的 `accelerate.hooks.AlignDevicesHook`, 当它作为某个 `nn.Module` 的 hook 时, 假设它在不执行 `forward` 函数时, 权重存储在 CPU 上 (这种情况称为 CPU offload). 在执行 `forward` 函数之前, hook 被触发, 将所有的入参及其本身的权重参数都被转移到了 `execution_device` 上 (通常是某一块 GPU 上), 而在执行完 `forward` 后, hook 会再次被触发, 将其本身的权重全部转移到 CPU 上 (根据配置的不同, 出参也许会被转移到与入参相同的设备上).
+
+但在某些特殊情况下, 上述执行逻辑效率比较低, 例如:
+
+```python
+# module_a, module_b 均被加上了 AlignDevicesHook, 在不运行时, 权重保存在 CPU 上, 而运行设备为 GPU
+for i in range(3):
+    x = module_a(x)
+for i in range(4):
+    x = module_b(x)
+```
+
+在上述情况下, `module_a` 本身的权重会经历 3 次 CPU 到 GPU 的拷贝以及 3 次 GPU 到 CPU 的拷贝, `module_b` 本身的权重会经历 4 次 CPU 到 GPU 的拷贝以及 4 次 GPU 到 CPU 的拷贝, 然而更为优秀的策略是, 在进入第一个 `for` 循环之时, `module_a` 的权重进行一次 CPU 到 GPU 的拷贝, 而后权重一直保持在 GPU 上, 直至第二个 `for` 循环开始时, 首先将 `module_a` 的权重从 GPU 拷贝回 CPU, 而后将 `module_b` 的权重从 CPU 转移至 GPU, 而后权重一直保持在 GPU 上, 在第二个循环结束时, 将 `module_b` 的权重从 GPU 拷贝回 CPU. 这样我们就最大限度地降低了 CPU 与 GPU 之间地内存拷贝次数, 从而提升了运行效率.
+
+那么如何实现呢? 首先我们需要定义一个半自动化的 `AlignDevicesHook`: 它只保证在 `forward` 函数执行之前, 模型参数被正确地转移到运行设备上, 并提供一个 `offload` 方法用以将参数重新从运行设备转移回 CPU, 但 `offload` 应该交由用户手动触发, 这样以来, 我们可能可以用类似于如下的伪代码实现之前提到的优化逻辑:
+
+```python
+attach_hook_to_module(module_a, hook_a)
+attach_hook_to_moduel(module_b, hook_b)
+for i in range(3):
+    x = module_a(x)
+hook_a.offload()
+for i in range(4):
+    x = module_b(x)
+hook_b.offload()
+```
+
+现在来看 🤗 accelerate 的实现方案, 先看使用例子(完全借用自源码 [docstring](https://github.com/huggingface/accelerate/blob/v0.20.3/src/accelerate/big_modeling.py#L194)):
+
+```python
+model_1, hook_1 = cpu_offload_with_hook(model_1, cuda_device)
+model_2, hook_2 = cpu_offload_with_hook(model_2, cuda_device, prev_module_hook=hook_1)
+model_3, hook_3 = cpu_offload_with_hook(model_3, cuda_device, prev_module_hook=hook_2)
+
+hid_1 = model_1(input)
+for i in range(50):
+    # model1 is offloaded on the CPU at the first iteration, model 2 stays on the GPU for this whole loop.
+    hid_2 = model_2(hid_1)
+# model2 is offloaded to the CPU just before this forward.
+hid_3 = model_3(hid_3)
+
+# For model3, you need to manually call the hook offload method.
+hook_3.offload()
+```
+
+注意到, 这里的使用方式与我们最初假想的使用方式的最大区别在于 `model_1` 与 `model_2` 的 `hook_1` 与 `hook_2` 不需要手动用 `offload` 函数触发. 实现逻辑如下, `cpu_offload_with_hook` 函数的源码为:
+
+```python
+def cpu_offload_with_hook(
+    model: torch.nn.Module,
+    execution_device: Optional[Union[int, str, torch.device]] = None,
+    prev_module_hook: Optional[UserCpuOffloadHook] = None,
+):
+    hook = CpuOffload(execution_device=execution_device, prev_module_hook=prev_module_hook)
+    add_hook_to_module(model, hook, append=True)
+    user_hook = UserCpuOffloadHook(model, hook)
+    return model, user_hook
+```
+
+此处的 `CpuOffload` 是前面章节提到的 `accelerate.hooks.ModelHook` 的子类, 其仅包含 `pre_forward`, 用于保证执行 `forward` 函数之前, 入参及模型参数被转移到执行设备上. 而 `UserCpuOffloadHook` **不是** `accelerate.hooks.ModelHook` 的子类, 它仅包含 `offload` 函数. 注意, 这里的 trick 在于 `CpuOffload` 在执行 `forward` 函数被触发时, 除了转移本模型的参数, 还自动触发了 `prev_module_hook.offload` 函数, 由此实现自动化, 唯一需要手动触发 `offload` 的是最后一个 `nn.Module`. 这两个类的实现源码如下:
+
+```python
+class CpuOffload(ModelHook):
+    def __init__(
+        self,
+        execution_device: Optional[Union[str, int, torch.device]] = None,
+        prev_module_hook: Optional["UserCpuOffloadHook"] = None,
+    ):
+        self.prev_module_hook = prev_module_hook
+
+        if execution_device is not None:
+            self.execution_device = execution_device
+        elif is_mps_available():
+            self.execution_device = torch.device("mps")
+        elif torch.cuda.is_available():
+            self.execution_device = torch.device(0)
+        else:
+            self.execution_device = torch.device("cpu")
+
+    def init_hook(self, module):
+        return module.to("cpu")
+
+    def pre_forward(self, module, *args, **kwargs):
+        module.to(self.execution_device)
+        if self.prev_module_hook is not None:
+            self.prev_module_hook.offload()
+        return send_to_device(args, self.execution_device), send_to_device(kwargs, self.execution_device)
+
+
+class UserCpuOffloadHook:
+    def __init__(self, model, hook):
+        self.model = model
+        self.hook = hook
+
+    def offload(self):
+        self.hook.init_hook(self.model)
+
+    def remove(self):
+        remove_hook_from_module(self.model)
 ```
