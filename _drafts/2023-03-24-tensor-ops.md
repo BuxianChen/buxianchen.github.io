@@ -1,8 +1,8 @@
 ---
 layout: post
-title: "(WIP) Pytorch Tensor Op"
+title: "(WIP) Tensor Ops"
 date: 2023-03-24 14:31:04 +0800
-labels: [pytorch]
+labels: [pytorch, numpy]
 ---
 
 ## 动机、参考资料、涉及内容
@@ -10,15 +10,18 @@ labels: [pytorch]
 动机：
 
 - 在深入阅读一些深度学习模型代码时，会遇到一些关于 `Tensor` 的下标处理操作，例如：huggingface transformers 中的 `generation/logit_process.py:RepetitionPenaltyLogitsProcess`。
+- numpy 的一些下标操作
 
 参考资料：
 
 - pytorch 官方文档
+- numpy 官方文档
 - 一些博客
 
-涉及内容与不涉及内容：
+涉及内容:
+- API 解释
+- 一些综合使用的例子
 
-待定
 
 ## torch.gather
 
@@ -34,6 +37,10 @@ torch.gather(input, dim: int, index)
 ## torch.scatter
 
 ## repeat, repeat_interleave, squeeze, unsqueeze
+
+## broadcast_to, expand
+
+`torch.broadcast_to` 与 `torch.expand` 完全等价, 注意 `torch.repeat` 会发生内存拷贝, 而 `torch.expand` 不会, 这两者的使用方式也不一样(适用于 `torch.expand` 的入参可能不适用 `torch.repeat`, 反之亦然)
 
 ## 索引与切片
 
