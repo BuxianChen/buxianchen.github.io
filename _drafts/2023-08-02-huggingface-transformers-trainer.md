@@ -266,6 +266,7 @@ predictions = np.squeeze(predictions) if is_regression else np.argmax(prediction
 
 - evaluate/predict 方法实际上就是 evaluation_loop, 完成了整个评估, 真正干活的是: prediction_step. 注意: `TrainingArguments` 中包含 `use_legacy_prediction_loop` 一项, 其默认值为 `False`, 这样会导致 evaluate/predict 进入 evaluation_loop 而非 prediction_loop, 后者被标记为 deprecated code.
 - evaluate 与 predict 基本上是一样的: 因为本质上都是调用一次 `evaluation_loop`, 得到一个 `EvalLoopOutput` 数据结构, 大体逻辑如下:
+
 ```python
 # trainer.trainer.evaluation_loop/prediction_loop 的输出:
 class EvalLoopOutput(NamedTuple):
@@ -287,7 +288,6 @@ class Trainer:
         return PredictionOutput(predictions=output.predictions, label_ids=output.label_ids, metrics=output.metrics)
     def evaluate(self, )
 ```
-
 
 ## 自定义 Trainer 指南
 
@@ -613,5 +613,80 @@ def _save(self, output_dir: Optional[str] = None, state_dict=None):
 ```
 
 ## 案例分析 1: run_glue.py
+
+此例子的源代码参考 [https://github.com/huggingface/transformers/blob/v4.31.0/examples/pytorch/text-classification/run_glue.py](https://github.com/huggingface/transformers/blob/v4.31.0/examples/pytorch/text-classification/run_glue.py), 这是一个分类问题的例子, 运行方式可参考例子的 README, 这里摘录如下:
+
+```bash
+export TASK_NAME=mrpc
+
+python run_glue.py \
+  --model_name_or_path bert-base-cased \   # ModelArguments
+  --task_name $TASK_NAME \                 # DataTrainingArguments
+  --do_train \                             # TrainingArguments
+  --do_eval \                              # TrainingArguments
+  --max_seq_length 128 \                   # DataTrainingArguments
+  --per_device_train_batch_size 32 \       # TrainingArguments
+  --learning_rate 2e-5 \                   # TrainingArguments
+  --num_train_epochs 3 \                   # TrainingArguments
+  --output_dir /tmp/$TASK_NAME/            # TrainingArguments
+```
+
+### HfArgumentParser
+
+首先可以观察到 `main` 函数开头的如下几行, 解析命令行参数
+
+```python
+parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
+    # If we pass only one argument to the script and it's the path to a json file,
+    # let's parse it to get our arguments.
+    model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+else:  # 上述运行方式会走这个 else 逻辑
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+```
+
+`HfArgumentParser` 继承自 `argparse.ArgumentParser`，`HfArgumentParser`只是在父类的基础上增加了几个方法：`parse_json_file`、`parse_args_into_dataclasses` 等
+
+**一个利用 HfArgumentParser 的示例**
+
+以下示例是为了可以用类似如下的方式进行传参: `python train.py --yaml a.yaml --path a.txt --lang en`, 其中参数可以使用 yaml 文件进行保存, 并且可以通过传递其他参数覆盖 yaml 文件中的设置
+
+```python
+from transformers import HfArgumentParser, TrainingArguments
+from dataclasses import dataclass, field
+from typing import Optional
+from argparse import ArgumentParser
+import sys
+import yaml
+
+@dataclass
+class DataTrainingArguments:
+    lang: str = field(default=None, metadata={"help": "xxx"})
+    dataset_name: Optional[str] = field(default=None, metadata={"help": "yyy"})
+
+@dataclass
+class ModelArguments:
+    path: str = field(metadata={"help": "zzz"})
+
+# 目的是可以用 --yaml a.yaml --path a.txt --lang en 进行传参,
+# 且--yaml参数解析的字段会被其他的字段例如: path, lang 覆盖.
+
+# 直接使用 parse_args_into_dataclasses 或 parse_yaml_file 无法处理这种特殊情况
+# --yaml a.yaml --path a.txt (假定 a.yaml 中没有指定 path)
+parser = ArgumentParser()
+parser.add_argument("-y", "--yaml", type=str, required=False)
+args, others = parser.parse_known_args(sys.argv[1:])
+if args.yaml:
+    with open(args.yaml) as fr:
+        d = yaml.safe_load(fr)
+else:
+    d = {}
+others = [x for k, v in d.items() for x in ["--"+k, str(v)]] + others
+parser = HfArgumentParser((DataTrainingArguments, ModelArguments, TrainingArguments))
+data_args, model_args, train_args = parser.parse_args_into_dataclasses(others)
+print(data_args, model_args, train_args)
+```
+
+
 
 ## 案例分析 2: chatglm2
