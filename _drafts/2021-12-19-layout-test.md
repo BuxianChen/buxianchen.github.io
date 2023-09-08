@@ -23,3 +23,35 @@ argmax 使用这种写法 $\arg\max_{x}{f(x)}$
 注意如果公式中需要连续使用两个花括号时, 中间要加一个空格, 避免与 liquid 语法冲突: $\frac{ {xy}_1}{2}$
 
 涉及到乘法, 最好使用 cdot 或者 times, 不要图省事使用普通的乘号, 它会容易与 markdown 语法的加粗/斜体混淆, 例如: **加粗文字**, $3\times x\cdot y$
+
+
+
+```python
+a = 1
+b = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssb"
+```
+
+
+注意`div`和`td`的结束标签必须顶格
+
+<table style="width: 100%; table-layout: fixed;">
+  <tr>
+    <td style="width: 100%; word-wrap: break-word; padding=5px; border: 1px solid #ccc; vertical-align: top;"><div markdown="1">
+**代码段1**
+```python
+a = 1
+b = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddb"
+```
+</div></td>
+    <td style="width: 100%; word-wrap: break-word; padding=5px; border: 1px solid #ccc; vertical-align: top;"><div markdown="1">
+**代码段2**
+</div></td>
+    <td style="width: 100%; word-wrap: break-word; padding=5px; border: 1px solid #ccc; vertical-align: top;"><div markdown="1">
+**代码段3**
+```python
+a = 1
+b = "sssssssssssssssssssssssssssssssssssssss"
+```
+</div></td>
+  </tr>
+</table>
