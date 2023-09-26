@@ -12,6 +12,7 @@ labels: [huggingface, hub]
 - 🤗 Transformers `AutoModel.from_pretrained` 过程中的下载与缓存机制: 模型脚本下载后怎么动态加载, 脚本文件怎么缓存, 模型文件怎么缓存. 提前使用 git clone 将 Hub 中的模型库下载后再执行 `from_pretrained`, 跟不手动 git clone 之间的差别在哪 (在文件缓存方面)
 - 🤗 Datasets `load_dataset` 过程里下载脚本, 动态 import, 下载数据, 将数据转化为 arrow 格式的具体逻辑
 - 🤗 缓存目录有没有可能跟 git clone 的方式下载能做某种“相互转换”
+- 怎么在 🤗 Hub Python API 之上开发新的项目: [https://huggingface.co/docs/huggingface_hub/guides/integrations](https://huggingface.co/docs/huggingface_hub/guides/integrations)
 - “玩转” huggingface 提供的 Hub 服务
 
 涉及内容
@@ -23,59 +24,271 @@ labels: [huggingface, hub]
 
 - 🤗 Hub 官方文档[https://huggingface.co/docs/huggingface_hub/guides/manage-cache](https://huggingface.co/docs/huggingface_hub/guides/manage-cache)
 
-## 产品逻辑
+## Huggingface Hub
 
 本篇博客的内容属于 🤗 的基础设施范畴, 这里想将 Huggingface 作为一个产品而言做一些解读, 以读者的认知范围, Huggingface 由这几部分构成
 
 - Hub (服务): 包含 Models, Datasets, Spaces, 这三者首先是作为 git 远程仓库存在的, 因此 🤗 提供了一个 Git 仓库的托管平台, 而且类似于 GitHub, 而这个平台还具备一些额外功能, 例如: 权限管理, 每个 Dataset 仓库还有数据预览功能, 每个 Model 仓库一般都有模型卡片页, 帮助读者快速上手, Space 仓库还免费提供了将仓库内的代码部署的功能
 - 软件与开发工具: 首先是 Hub API, 然后是各种下游库, 最知名的是 transformers 库
 
-## Huggingface Hub
+## Huggingface Hub Python API
 
-### 按图索骥
+### Main API
 
 通读官方文档后, 感觉对下游库或者对基于 Huggingface Hub 进行开发比较有作用的 API
 
+两类 API: `Repository`, `HfApi`. 更推荐 `HfApi` 接口.
 
-两类 API: `Repository`, `HfApi`
+`HfApi` 的大致原理如下: 
 
-`HfApi` 的大致原理如下: 直接利用本地的单个文件或者单个版本对远程仓库进行操作
+- 对于文件上传操作, 直接利用本地的单个文件或者单个版本对远程仓库发送 HTTP 请求, 服务端 (即 Huggingface Hub) 处理请求 (例如: 操作远程仓库), 因此无需保存完整的 git 仓库备份.
+- 对于下载文件操作, 这个库的作者设计了一个缓存目录结构来对下载的文件进行保存, 这种目录结构与传统的 git 仓库的 `.git` 目录略有不同, 算是借用了 git 中底层的一些内容进行按需简化.
 
-- `create_repo`
-- `delete_repo`
+具体比较重要的 API 如下:
+
+- `create_repo`, `delete_repo`
 - `create_branch`, `create_tag`, `delete_branch`, `delete_tag`: 远程创建/删除branch/tag
-- `create_commit`: 底层接口, 下面四个底层都调用了 create_commit 方法, 除此之外, `metadata_update` 也使用了此方法
+- `create_commit`, `create_commit_on_pr`: 底层接口, 下面四个底层都调用了 create_commit 方法, 除此之外, `metadata_update` 也使用了此方法
 - `upload_file`, `upload_folder`, `delete_file`, `delete_folder`
 - `hf_hub_download`:
   - 广泛用于 transformers 库中各种模型的权重转换脚本中, 例如 `transformers/models/videomae/convert_videomae_to_pytorch.py`
 - `snapshot_download`
 
+`Repository` 的大致原理
+
+由于
+
+原生 git 命令
+
+
+
+### API List
+
+#### `HfApi`: 仓库文件相关
+
+同时适用于 model/dataset/space
+
+```python
+# create_repo
+
+# duplicate_space
+
+# move_repo
+
+# create_tag
+
+# create_branch
+# exist_ok 默认为 False
+create_branch(repo_id, branch="new_branch", revision="from", exist_ok=False)
+
+# create_commit: (见后续)
+
+# create_commits_on_pr: (见后续)
+
+# delete_branch
+
+# delete_file
+
+# delete_folder
+
+# delete_repo
+
+# delete_tag
+
+# metadata_update
+
+# snapshot_download
+
+# hf_hub_download
+
+# super_squash_history
+
+# update_repo_visibility
+
+# upload_file, upload_folder
+
+# huggingface_hub.plan_multi_commits (不是HfApi类的方法, 而是单独的方法)
+```
+
+#### `HfApi`: discussion, PR 相关
+
+同时适用于 model/dataset/space
+
+```python
+# create_discussion
+# 默认pull_request 为 False, 而当取值为 True 时, 会在远程仓库建立类似refs/pr/6这种分支名, 然后创建的 discussion 会被标记为 Draft PR, 网页界面上会有操作指引:
+# git clone https://huggingface.co/Buxian/test-model
+# cd test-model && git fetch origin refs/pr/6:pr/6
+# git checkout pr/6
+# huggingface-cli login
+# git push origin pr/6:refs/pr/6
+# 在网页上点按钮将PR转换为正式状态
+# 
+# 具体可参考:
+# https://huggingface.co/docs/hub/repositories-pull-requests-discussions
+create_discussion(repo_id, title="title", description="content", pull_request=True)
+
+# git clone 时不会 clone refs/pr/6 这个分支, 执行git fetch origin refs/pr/6:xxyy时, 目录结构会增加一个
+# .git/refs/
+# ├── heads
+# │   ├── main  # 保存着 commit-id
+# │   └── xxyy  # 保存着 commit-id
+
+
+# create_pull_request
+# 本质上, 就是调用 create_discussion 设定参数 pull_request=True 实现的
+create_pull_request(repo_id, title="title", description="content")
+
+
+# change_discussion_status
+# 注意PR与Discussion的编号是混在一起的, 序号从1开始, 例如可能是这样
+# https://huggingface.co/Buxian/test-model/discussions/1    PR
+# https://huggingface.co/Buxian/test-model/discussions/2    Discussion
+# https://huggingface.co/Buxian/test-model/discussions/3    PR
+# 如果状态本身就是 closed, 那么会报错
+change_discussion_status(repo_id, discussion_num=2, new_status='closed', comment='finish the discussion')
+
+# comment_discussion
+comment_discussion(repo_id,  discussion_num=2, comment="add comment")
+
+# edit_discussion_comment
+
+# hidden_discussion_comment
+
+# rename_discussion
+
+# merge_pull_request
+```
+
+备注: 针对 PR 继续提交代码[暂无](https://huggingface.co/docs/huggingface_hub/guides/community#push-changes-to-a-pull-request)
+
+
+#### `HfApi`: 查询
+
+有些是针对特定的 repo 类型, 有些是通用的
+
+```python
+# dataset_info/model_info/repo_info/space_info
+
+# like, unlike
+
+# list_datasets, list_files_info, list_liked_repos, list_metrics, list_models, list_repo_commits, list_repo_files, list_repo_refs, list_spaces
+
+# file_exists
+
+# get_dataset_tags
+
+# get_discussion_details
+
+# get_full_repo_name
+
+# get_model_tags
+
+# get_repo_discussions
+
+# get_space_runtime
+
+# get_space_variables
+
+# get_token_permission
+
+# repo_exists
+
+# whoami
+```
+
+#### `HfApi`: 其他
+
+```python
+# run_as_future(这个可以研究下)
+
+# add_space_secret
+# 增加一个secret环境变量, 复制空间时不会被拷贝
+
+# add_space_variable
+# 增加一个公开的环境变量, 复制空间时会被拷贝
+
+# delete_space_secret
+
+# delete_space_storage
+
+# delete_space_variable
+
+# request_space_hardware, request_space_storage
+
+# restart_space
+
+# set_space_sleep_time
+
+# pause_space
+```
+
+#### HfFileSystem
+
+```python
+# huggingface_hub.HfFileSystem (仅仅是对HfApi的一点封装)
+# pip install pandas huggingface_hub
+import pandas as pd
+df = pd.read_csv("hf://Buxian/test-model/.gitattributes", sep=" ")
+```
+
+#### Inference API
+
+这个一般适用于 model 类型的仓库, 无需代码自动部署
+
+```python
+import json
+import requests
+API_URL = "https://api-inference.huggingface.co/models/gpt2"
+headers = {"Authorization": f"Bearer {token}"}
+def query(payload):
+    data = json.dumps(payload)
+    response = requests.request("POST", API_URL, headers=headers, data=data)
+    return json.loads(response.content.decode("utf-8"))
+data = query("Can you please let us know more details about your ")
+```
+
+怎么确定它是语言模型? 入参出参怎么确定的呢? 可能的因素:
+
+任务类型确定:
 
 ```
+# https://huggingface.co/bert-base-uncased/blob/main/config.json
+# https://huggingface.co/bert-base-uncased
+# 页面上 Inference API 上显示的是 Fill-Mask
+{
+    "architectures": ["BertForMaskedLM"]
+}
+
+# https://huggingface.co/internlm/internlm-chat-7b/blob/main/config.json
+# https://huggingface.co/internlm/internlm-chat-7b
+# 页面上 Inference API 上显示的是 Text Generation
+{
+  "architectures": [
+    "InternLMForCausalLM"
+  ],
+  "auto_map": {
+    "AutoConfig": "configuration_internlm.InternLMConfig",
+    "AutoModel": "modeling_internlm.InternLMForCausalLM",
+    "AutoModelForCausalLM": "modeling_internlm.InternLMForCausalLM"
+  },
+}
 ```
+
+任务类型与请求出入参对应关系: [https://huggingface.co/docs/api-inference/detailed_parameters](https://huggingface.co/docs/api-inference/detailed_parameters)
+
+#### Inference Endpoint
+
+这种适用于 Space 类型的仓库, 可完全控制部署的服务
+
+
+### Cheetsheet
 
 ```python
 from huggingface_hub import login, create_repo
 token = "hf_xxxyyy"
 login(token)
 create_repo("Buxian/test-model")
-```
-
-
-
-```python
-# huggingface-cli lfs-enable-largefiles
-# 底层实际干的事:
-lfs_config = "git config lfs.customtransfer.multipart"
-LFS_MULTIPART_UPLOAD_COMMAND = "lfs-multipart-upload"
-run_subprocess(f"{lfs_config}.path huggingface-cli", self.local_dir)
-run_subprocess(
-    f"{lfs_config}.args {LFS_MULTIPART_UPLOAD_COMMAND}",
-    self.local_dir,
-)
-
-git config lfs.customtransfer.multipart.path huggingface-cli <local_dir>
-git config lfs.customtransfer.multipart.args lfs-multipart-upload <local_dir>
 ```
 
 
@@ -209,6 +422,8 @@ assets_path = cached_assets_path(library_name="datasets", namespace="SQuAD", sub
 something_path = assets_path / "something.json" # Do anything you like in your assets folder !
 ```
 
+注意: 例如 `datasets` 库就没有使用 cached_assets_path 来确定默认的缓存目录, 而是用 `~/.cache/huggingface/dataset`
+
 
 cache 文件结构目录, 也可参考官方示例: [https://huggingface.co/docs/huggingface_hub/guides/manage-cache#in-practice](https://huggingface.co/docs/huggingface_hub/guides/manage-cache#in-practice)
 ```
@@ -267,6 +482,24 @@ asset 文件结构示例: [https://huggingface.co/docs/huggingface_hub/guides/ma
                 └── (...)
     datasets/
     modules/
+```
+
+### 大文件处理
+
+
+```python
+# huggingface-cli lfs-enable-largefiles
+# 底层实际干的事:
+lfs_config = "git config lfs.customtransfer.multipart"
+LFS_MULTIPART_UPLOAD_COMMAND = "lfs-multipart-upload"
+run_subprocess(f"{lfs_config}.path huggingface-cli", self.local_dir)
+run_subprocess(
+    f"{lfs_config}.args {LFS_MULTIPART_UPLOAD_COMMAND}",
+    self.local_dir,
+)
+
+git config lfs.customtransfer.multipart.path huggingface-cli <local_dir>
+git config lfs.customtransfer.multipart.args lfs-multipart-upload <local_dir>
 ```
 
 
