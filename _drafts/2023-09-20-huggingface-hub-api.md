@@ -348,8 +348,45 @@ git commit --allow-empty -m "no file changed"
 
 备注: 在使用 `create_pr=True` 的时候产生了两个疑问:
 - 怎么持续为一个 pr 增加提交
-- 怎么解决 pr 与需要合并的分支的冲突 (似乎只有用 Repository API 来做?)
+- 怎么解决 pr 与需要合并的分支的冲突 (似乎只有用 Repository API 来做? 可能也做不了, 只能用 git CLI)
 
+
+**源码**
+
+```python
+# create_commit 源码:
+
+# step 1: 待上传文件哈希值计算(sha256, 而非 git oid)
+
+# step 2: fetch_upload_modes
+
+# library_name: mylib, library_version: v1.0
+headers = {
+  "user-agent": "mylib/v1.0; hf_hub/0.18.0.dev0; python/3.9.10; torch/2.0.1;",
+  "authorization": "Bearer hf_cdfjjfjfj",
+}
+
+json = {
+  "files": [
+    {
+      "path": op.path_in_repo,
+      "sample": base64.b64encode(op.upload_info.sample).decode("ascii"),  # sample 是少量字节
+      "size": op.upload_info.size,
+      "sha": op.upload_info.sha256.hex()
+    }
+    for op in chunk
+  ]
+}
+
+preupload_info = get_session().post(
+  f"{endpoint}/api/{repo_type}s/{repo_id}/preupload/{revision}",
+  json=json,
+  headers=headers,
+  params={"create_pr": "1"} if create_pr else None
+).json()
+
+
+```
 
 #### `upload_folder`
 
