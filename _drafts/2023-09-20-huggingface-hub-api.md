@@ -48,7 +48,7 @@ labels: [huggingface, hub]
 
 - `create_repo`, `delete_repo`
 - `create_branch`, `create_tag`, `delete_branch`, `delete_tag`: 远程创建/删除branch/tag
-- `create_commit`, `create_commit_on_pr`: 底层接口, 下面四个底层都调用了 create_commit 方法, 除此之外, `metadata_update` 也使用了此方法
+- `create_commit`, `create_commits_on_pr`: 底层接口, 下面四个底层都调用了 create_commit 方法, 除此之外, `metadata_update` 也使用了此方法
 - `upload_file`, `upload_folder`, `delete_file`, `delete_folder`
 - `hf_hub_download`:
   - 广泛用于 transformers 库中各种模型的权重转换脚本中, 例如 `transformers/models/videomae/convert_videomae_to_pytorch.py`
@@ -350,12 +350,87 @@ git commit --allow-empty -m "no file changed"
 - 怎么持续为一个 pr 增加提交
 - 怎么解决 pr 与需要合并的分支的冲突 (似乎只有用 Repository API 来做? 可能也做不了, 只能用 git CLI)
 
+#### `upload_folder`
 
-**源码**
+类似于 `upload_file`, 不赘述太多
+
+#### `create_commit` / `create_commits_on_pr`
+
+`create_commit` 是 `upload_folder/upload_file/delete_folder/delete_file` 在内部调用的方法.
+
+`create_commit` 方法也是**对外接口**, 例如希望做一个类似如下的提交:
+
+```
+# 为远程仓库的main分支增加一个提交, 提交内容如下
+1. 将本地的 test/exp.py 添加到远程仓库内的 test/exp.py
+2. 将远程仓库 dev 分支的 pytorch_mode.bin 复制到 main 分支
+3. 删除远程仓库的 deploy/app.py 文件
+4. 删除远程仓库的 docker/Dockerfile 文件
+```
+
+这个提交不能使用 `upload_folder/upload_file/delete_folder/delete_file`, 只能调用 `create_commit` 来实现. 原因在于:
+
+- 涉及到多个目录, 没有办法用 `uploader_folder` 实现
+- 涉及到lfs的拷贝操作(`CommitOperationCopy`), 四个高阶 API 都没法处理
+
+而 `create_commit` 本质上的执行逻辑是: 本地发送 HTTP 请求给 Hub 服务器, 本地已经打包了创建的 commit 相关的信息以及上传文件, Hub 服务器接收到请求后更新远端仓库
+
+`create_commits_on_pr` 目前处于**实验阶段**, 个人认为不是**不是对外接口**, 仅在 `upload_folder` 中可能被调用, 用于分批进行文件提交(每次提交具体提交哪些文件由 huggingface_hub 内部方法决定: `plan_multi_commits` 方法).
+
+
+#### 源码分析: `upload_folder/upload_file/delete_folder/delete_file`
+
+以下几个方法最终的返回值都是一个 URL, 格式如下
 
 ```python
-# create_commit 源码:
+from huggingface_hub import hf_hub_url, upload_file, upload_folder
+_staging_mode = _is_true(os.environ.get("HUGGINGFACE_CO_STAGING"))
+ENDPOINT = os.getenv("HF_ENDPOINT") or ("https://hub-ci.huggingface.co" if _staging_mode else "https://huggingface.co")
+endpoint = ENDPOINT  # 因此默认是: "https://huggingface.co"
+f"{endpoint}/{repo_id}/resolve/{revision}/{filename}"   # hf_hub_url
+f"{endpoint}/{repo_id}/tree/{revision}/{path_in_repo}"  # upload_file
+f"{endpoint}/{repo_id}/blob/{revision}/{path_in_repo}"  # upload_folder
+```
 
+由于 `upload_file` 与 `upload_folder` 在本质上是调用 `create_commit` 和 `create_commits_on_pr` 进行实现的 (`delete_file` 与 `delete_folder` 类似, 此处不赘述), 大致的伪代码如下:
+
+```python
+def upload_file(...):
+  operations = [CommitOperationAdd(...)]  # 每个文件一个operation, upload_file只涉及一个文件, 且只能是 CommitOperationAdd
+  commit_info = create_commit(operations, ...)
+  return f"{endpoint}/{repo_id}/blob/{revision}/{path_in_repo}"
+
+def upload_folder(
+  ...,
+  delete_patterns, allow_patterns, ignore_patterns,
+  multi_commits: bool = False, create_pr: bool = False
+):
+  delete_operations = self._prepare_upload_folder_deletions(..., delete_patterns)  # List[CommitOperationDelete]
+  add_operations = self._prepare_upload_folder_additions(..., allow_patterns, ignore_patterns)  # List[CommitOperationAdd]
+  commit_operations = delete_operations + 
+  
+  # multi_commits 为 True, 则创建一个 Draft PR, 并可能进行多次提交
+  if multi_commits:
+    addition_commits, deletion_commits = plan_multi_commits(operations=commit_operations)
+    pr_url = self.create_commits_on_pr(addition_commits, deletion_commits)
+  else:
+    commit_info = create_commit(operations, ...)
+    pr_url = commit_info.pr_url
+  return f"{endpoint}/{repo_id}/tree/{revision}/{path_in_repo}"
+```
+
+所以 `upload_file` 和 `upload_folder` 本质上只是构造了 `create_commit` 或 `create_commits_on_pr` 的入参 `operations`, 所有可能的 `operations` 在 huggingface_hub 中一共有三种:
+
+```python
+CommitOperationAdd     # upload_file/upload_folder, 可以是lfs文件或普通文件
+CommitOperationDelete  # upload_folder/delete_file/delete_folder, 可以是lfs文件或普通文件
+CommitOperationCopy    # 只有直接调用 create_commit 方法时才触发, 只能对lfs文件能进行此操作
+```
+
+
+#### 源码分析: `create_commit
+
+```python
 # step 1: 待上传文件哈希值计算(sha256, 而非 git oid)
 
 # step 2: fetch_upload_modes
@@ -384,18 +459,12 @@ preupload_info = get_session().post(
   headers=headers,
   params={"create_pr": "1"} if create_pr else None
 ).json()
-
-
 ```
 
-#### `upload_folder`
 
-类似于 `upload_file`, 不赘述太多
+#### 源码分析: `plan_multi_commits` 与 `create_commits_on_pr`
 
-#### `create_commit` / `create_commit_on_pr`
-
-`create_commit` 是 `upload_folder` 与 `upload_file` 在内部调用的方法. 本小节实质上是对 `uploader_folder` 的原理/源码进行解析, 本质上: 本地发送 HTTP 请求给 Hub 服务器, 本地已经打包了创建的 commit 相关的信息以及上传文件, Hub 服务器接收到请求后更新远端仓库
-
+【待定】
 
 ### Download
 
@@ -404,39 +473,7 @@ preupload_info = get_session().post(
 - `hf_hub_download`: 下载单个文件
 - `snapshot_download`: 下载一个版本的多个文件
 
-#### `hf_hub_download`
-
-```python
-from huggingface_hub import hf_hub_download
-hf_hub_download(repo_id="huggingface/label-files", filename="kinetics400-id2label.json", repo_type="dataset")
-```
-
-按照缓存目录结构下载单个文件
-```
-~/.cache/huggingface/hub/
-├── datasets--huggingface--label-files
-│   ├── blobs
-│   │   └── 32cb9c6d5f5fe544580663ec11808e15c0ae2080
-│   ├── refs
-│   │   └── main
-│   └── snapshots
-│       └── 9462154cba99c3c7f569d3b4f1ba26614afd558c
-│           └── kinetics400-id2label.json -> ../../blobs/32cb9c6d5f5fe544580663ec11808e15c0ae2080
-└── version.txt
-```
-
-```python
-@validate_hf_hub_args
-def hf_hub_download(...)
-```
-
-`validate_hf_hub_args` 装饰器用于检查被装饰的函数的入参:
-
-- 如果 `repo_id`, `from_id`, `to_id` 是函数的入参, 检查其传入的实参的值是满足条件的字符串: 至多只包含一个 `/`, 不包含 `--` 与 `__`, 以 `/` 分隔的两部分只能由 数字/字母/`.-_` 构成, 不能以 `.git` 结尾. 简单来说就是检查入参是一个合法的 repo_id
-- 关于 `use_auth_token` 与 `token` 参数的兼容性检查, 具体细节不深究, 只需记住一点, 旧版本的参数一般是 `use_auth_token`, 未来版本最终计划弃用这个参数, 使用 `token` 作为入参
-
-
-### 缓存目录
+#### 缓存目录
 
 参考官方文档: [https://huggingface.co/docs/huggingface_hub/guides/manage-cache](https://huggingface.co/docs/huggingface_hub/guides/manage-cache)
 
@@ -521,7 +558,43 @@ asset 文件结构示例: [https://huggingface.co/docs/huggingface_hub/guides/ma
     modules/
 ```
 
-### 大文件处理
+#### `hf_hub_download`
+
+```python
+from huggingface_hub import hf_hub_download
+hf_hub_download(repo_id="huggingface/label-files", filename="kinetics400-id2label.json", repo_type="dataset")
+```
+
+按照缓存目录结构下载单个文件
+```
+~/.cache/huggingface/hub/
+├── datasets--huggingface--label-files
+│   ├── blobs
+│   │   └── 32cb9c6d5f5fe544580663ec11808e15c0ae2080
+│   ├── refs
+│   │   └── main
+│   └── snapshots
+│       └── 9462154cba99c3c7f569d3b4f1ba26614afd558c
+│           └── kinetics400-id2label.json -> ../../blobs/32cb9c6d5f5fe544580663ec11808e15c0ae2080
+└── version.txt
+```
+
+```python
+@validate_hf_hub_args
+def hf_hub_download(...)
+```
+
+`validate_hf_hub_args` 装饰器用于检查被装饰的函数的入参:
+
+- 如果 `repo_id`, `from_id`, `to_id` 是函数的入参, 检查其传入的实参的值是满足条件的字符串: 至多只包含一个 `/`, 不包含 `--` 与 `__`, 以 `/` 分隔的两部分只能由 数字/字母/`.-_` 构成, 不能以 `.git` 结尾. 简单来说就是检查入参是一个合法的 repo_id
+- 关于 `use_auth_token` 与 `token` 参数的兼容性检查, 具体细节不深究, 只需记住一点, 旧版本的参数一般是 `use_auth_token`, 未来版本最终计划弃用这个参数, 使用 `token` 作为入参
+
+#### `snapshot_download`
+
+
+### 杂项
+
+#### 大文件处理
 
 
 ```python
@@ -538,6 +611,10 @@ run_subprocess(
 git config lfs.customtransfer.multipart.path huggingface-cli <local_dir>
 git config lfs.customtransfer.multipart.args lfs-multipart-upload <local_dir>
 ```
+
+### Developer
+
+huggingface hub python API 很大一部分是对 git 命令行的封装
 
 
 ## 🤗 Transformers
