@@ -428,7 +428,132 @@ CommitOperationCopy    # 只有直接调用 create_commit 方法时才触发, �
 ```
 
 
-#### 源码分析: `create_commit
+#### 源码分析: `create_commit`
+
+步骤如下:
+
+- 确定类型是 `CommitOperationAdd` 的文件是以普通文件还是 lfs 文件方式上传, 请求方式为:
+  ```
+  请求:
+  url: f"{endpoint}/api/{repo_type}s/{repo_id}/preupload/{revision}"
+  method: POST
+  headers: {
+    "user-agent": "mylib/v1.0; hf_hub/0.17.2; python/3.9.16; torch/1.12.1+cu113;",
+    "authorization": f"Bearer {token}"
+  }
+  json: {
+    "files":{
+      [
+        {"path": op.path_in_repo, "sample": op.upload_info.sample, "size": 234, "sha": op.upload_info.sha256}
+      ]
+    }
+  }
+
+  响应:
+  {'files': [{'path': op.path_in_repo, 'uploadMode': 'regular'}]}
+  ```
+- 确定类型是 `CommitOperationCopy` 的文件的相关信息
+  ```
+  请求:
+  通过 HfApi的list_file_repo
+
+  响应:
+  确定需要复制的文件确实存在, 并得到相关信息
+  ```
+- 将类型是 `CommitOperationAdd` 且为 lfs 的文件进行上传(如果需要的话), 并验证上传是否成功
+  - STEP 1: 获取上传方式及验证方式
+    ```
+    请求:
+    url: f"{endpoint}/{repo_id}.git/info/lfs/objects/batch"
+    method: POST
+    headers: {
+      "Accept": "application/vnd.git-lfs+json",
+      "Content-Type": "application/vnd.git-lfs+json",
+    }
+    json: {
+      "operation": "upload",
+      "transfers": ["basic", "multipart"],
+      "objects": [
+        {
+          "oid": upload.upload_info.sha256.hex(),
+          "size": upload.upload_info.size,
+        }
+        for upload in lfs_additions
+      ],
+      "hash_algo": "sha256",
+    }
+
+    响应:
+    {
+      "transfer": "basic"
+      "objects": [
+        {
+          "oid": upload.upload_info.sha256.hex(),
+          "size": upload.upload_info.size,
+          "authenticated": True,
+          'actions': {
+            'upload': {
+              'href': 'https://s3.us-east-1.amazonaws.com/lfs.huggingface.co/repos/...'
+            },
+            'verify': {
+              'href': 'https://huggingface.co/Buxian/test-model.git/info/lfs/objects/verify',
+              'header': {'Authorization': 'Basic xyzdef'}
+            }
+          }
+        }
+      ]
+    }
+    备注: xyzdef 是 token='hf_xyzdef'
+    ```
+  - STEP 2: 上传lfs文件
+    ```
+    # 方式一: 一次将单个文件上传完毕
+    url: actions.upload.href
+    method: PUT
+    data: op.asfile()
+
+    # 方式二: 一次只能上传一个文件一定大小的数据, 多次上传
+    # 先分块上传
+    url: actions.upload.header.values()[i]
+    method: PUT
+    data: op.asfile()[part_start:part_end]
+
+    # 最后告知上传完成
+    url: actions.upload.href
+    method: POST
+    headers: {
+      "Accept": "application/vnd.git-lfs+json",
+      "Content-Type": "application/vnd.git-lfs+json"
+    }
+    ```
+
+  - STEP 3: 验证上传成功
+    ```
+    请求:
+    url: actions.verify.href
+    method: POST
+    json: {"oid": operation.upload_info.sha256.hex(), "size": operation.upload_info.size}
+    ```
+
+- 创建提交并上传
+  ```
+  请求:
+  url: f"{self.endpoint}/api/{repo_type}s/{repo_id}/commit/{revision}"
+  method: POST
+  headers: {
+    "Content-Type": "application/x-ndjson",
+    "user-agent": "mylib/v1.0; hf_hub/0.17.2; python/3.9.16; torch/1.12.1+cu113;",
+    "authorization": f"Bearer {token}"
+  }
+  data: bytes
+  params: {"create_pr": "1"} if create_pr else None
+  # 备注: data 中的字节是由提交项的各个文件拼接起来的
+
+  响应:
+
+  ```
+
+
 
 ```python
 # step 1: 待上传文件哈希值计算(sha256, 而非 git oid)
