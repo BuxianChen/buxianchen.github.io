@@ -684,7 +684,11 @@ CommitOperationCopy    # 只有直接调用 create_commit 方法时才触发, �
 
 **<span style="color:red">源码分析</span>**
 
-一个简化(其实基本是抄源码)的实现见[这里](https://github.com/BuxianChen/snippet/blob/master/huggingface_hub/simple_create_commit.py), 需要指出的是实际上涉及到的 http 请求的 API 文档我没有在[这里](https://huggingface.co/docs/hub/api)找到, 可能这些都是内部的 API 接口, 这里对执行步骤总结如下:
+一个简化(其实基本是抄源码)的实现见
+
+[https://github.com/BuxianChen/snippet/blob/master/huggingface_hub/simple_hf_hub_download.py](https://github.com/BuxianChen/snippet/blob/master/huggingface_hub/simple_create_commit.py)
+
+需要指出的是实际上涉及到的 http 请求的 API 文档我没有在[这里](https://huggingface.co/docs/hub/api)找到, 可能这些都是内部的 API 接口, 这里对执行步骤总结如下:
 
 - 确定类型是 `CommitOperationAdd` 的文件是以普通文件还是 lfs 文件方式上传, 请求方式为:
   ```
@@ -929,21 +933,22 @@ cache 文件结构目录, 也可参考官方示例: [https://huggingface.co/docs
 ~/.cache/huggingface/hub
   - models--username--projectname/
     - refs/                  # 包含的是分支名对应的最新 commit-id
-      - main                 # 文本文件, 实际存储的是对应的 commit-id, 例如: eee
-      - dev                  # 文本文件, 实际存储的是对应的 commit-id, 例如: fff
+      - main                 # 文本文件, 实际存储的是对应的 commit-id, 例如: eeeeeeeee
+      - dev                  # 文本文件, 实际存储的是对应的 commit-id, 例如: fffffffff
+      - eeeeeee              # 文本文件, 实际存储的是对应的 commit-id, 例如: eeeeeeeee, 注意文件名是截断的 commit-id
     - blobs/
       - aaaaaaaaaaaaaaaaaaaaaaaaa
       - bbbbbbbbbbbbbbbbbbbbbbbbb
       - ccccccccccccccccccccccccc
       - ddddddddddddddddddddddddd
     - snapshots/  # 假设dev分支历史版本有fff和ggg
-      - eee/
+      - eeeeeeeee/
         - pytorch_model.bin  # 软连接至 blobs/aaaaaaaaaaaaaaaaaaaaaaaaa
         - README.md          # 软连接至 blobs/bbbbbbbbbbbbbbbbbbbbbbbbb
-      - fff/
+      - fffffffff/
         - pytorch_model.bin  # 软连接至 blobs/aaaaaaaaaaaaaaaaaaaaaaaaa
         - README.md          # 软连接至 blobs/ccccccccccccccccccccccccc
-      - ggg/
+      - ggggggggg/
         - README.md
 ```
 
@@ -1034,11 +1039,22 @@ def hf_hub_download(
 - `force_download`, `resume_download`, `local_files_only`: 用于控制下载行为, 即强制重新下载/使用“断点续传”/只使用本地的缓存
 - `force_filename`, `legacy_cache_layout`: 弃用参数, 不必理会
 
-这里举一些参数组合的例子【待补充】:
+这里是上面的一些参数的可能取值:
 
-```python
-revision = "commit-id"
-```
+- `revision`: 使用 branch/tag 名指定; 使用 commit-id 指定
+- `local_dir`: 被设定时, `local_dir_use_symlinks` 取值为 `"auto"`/`True`/`False`
+- `force_download`, `resume_download`, `local_files_only` 取值可以是 `True`/`False`
+- 网络是否通畅
+
+其中 `local_dir` 和 `local_dir_use_symlinks` 的逻辑如下: 在完成文件的下载后, 如果 `local_dir_use_symlinks` 默认被设置为了 `"auto"`, 如果目标文件是大文件(文件大小超过5MB, 由 `HF_HUB_LOCAL_DIR_AUTO_SYMLINK_THRESHOLD` 环境变量决定), 则在 `local_dir` 保存 `cache_dir` 中该文件的软连接, 如果是小文件, 则 `local_dir` 中保存一份 `cache_dir` 中该文件的复制. 如果 `local_dir_use_symlinks=True`, 则无论文件大小, 都采用软连接, 如果 `local_dir_use_symlinks=False`, 则无论文件大小, 都从 `cache_dir` 中复制一份到 `local_dir` 中. 并且如果一旦指定了 `local_dir`, `hf_hub_download` 返回的文件路径会是 `local_dir` 内的文件路径, 以下所有情况都在最后执行前述逻辑.
+
+情况1: 假设 `revision` 使用 commit-id 进行指定, 且本地已有该 commit-id 对应的缓存, 则直接返回 (注意 huggingface_hub 并不检查此文件是否被修改过).
+
+情况2: 假设 `revision` 通过 branch/tag 进行指定, 且本地已有一份该 branch/tag 对应的缓存
+- 情况2.1: 如果使用了 `local_files_only=True` 或者网络不通畅, 则使用本地的缓存文件(注意: 这样得到的文件可能不是最新的)
+- 情况2.2: 首先发送一个 HTTP 请求查询远程的 branch/tag 是否被更新, 如果被更新, 则需要先修改本地的 `{cache_dir}/{sub_path}/refs/{branch}` 文件里的 commit-id 值, 然后执行下载文件的逻辑
+
+情况3: 假设本地不存在指定的 `revision` 对应的缓存, 则先在 `{cache_dir}/{sub_path}/refs/{revision}` 中保存 commit-id 值 (除非 `revision` 是完整 commit-id), 然后执行下载文件下载逻辑
 
 
 **<span style="color:red">源码分析</span>**
@@ -1072,22 +1088,18 @@ def hf_hub_download(...)
 - 如果 `repo_id`, `from_id`, `to_id` 是函数的入参, 检查其传入的实参的值是满足条件的字符串: 至多只包含一个 `/`, 不包含 `--` 与 `__`, 以 `/` 分隔的两部分只能由 数字/字母/`.-_` 构成, 不能以 `.git` 结尾. 简单来说就是检查入参是一个合法的 repo_id
 - 关于 `use_auth_token` 与 `token` 参数的兼容性检查, 具体细节不深究, 只需记住一点, 旧版本的参数一般是 `use_auth_token`, 未来版本最终计划弃用这个参数, 使用 `token` 作为入参
 
-而 `hf_hub_download` 的主体部分可参看如下伪代码
+而 `hf_hub_download` 的主体部分可参考:
 
-```python
-url = "{endpoint}/{repo_id}/resolve/{revision}/{filename}"
-headers = {
-    "user-agent": "mylib/v1.0; hf_hub/0.17.2; python/3.9.16; torch/1.12.1+cu113;",
-    "authorization": f"Bearer {token}"
-}
-meta_headers = headers.copy()
-meta_headers["Accept-Encoding"] = "identity"
-metadata = requests.head(url, headers)
-```
+[https://github.com/BuxianChen/snippet/blob/master/huggingface_hub/simple_hf_hub_download.py](https://github.com/BuxianChen/snippet/blob/master/huggingface_hub/simple_hf_hub_download.py)
+
+备注: 仅包含上一节的情况 3: 即本地完全没有缓存, 且不包含 `local_dir` 参数的逻辑
 
 #### `snapshot_download`
 
+`snapshot_download` 在源码实现的大致逻辑是:
 
+- 调用 `HfApi.repo_info` 方法找到所有该 revision 的文件
+- 逐个(可以使用多进程加速)文件使用 `hf_hub_download` 方法进行下载
 
 ### HfFileSystem
 
