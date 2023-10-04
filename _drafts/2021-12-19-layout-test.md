@@ -62,3 +62,11 @@ b = "sssssssssssssssssssssssssssssssssssssss"
 </div></td>
   </tr>
 </table>
+
+作图 (svg)
+
+<svg width="400" height="200">
+    <circle cx="50" cy="50" r="20" fill="blue" />
+    <circle cx="150" cy="50" r="20" fill="red" />
+    <line x1="50" y1="50" x2="150" y2="50" stroke="black" stroke-width="2" />
+</svg>
