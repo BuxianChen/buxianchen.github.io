@@ -147,13 +147,13 @@ create_commit = api.create_commit
 <tr>
   <td>下载单个文件</td>
   <td>HfApi.hf_hub_download</td>
-  <td>【待研究】</td>
-  <td></td>
+  <td>{endpoint}/{repo_id}/resolve/{revision}/{filename} HEAD</br>{endpoint}/{repo_id}/resolve/{revision}/{filename} GET</td>
+  <td>前一个请求是为了获取需要下载的文件的准确信息, 第二个请求的 URL 是在第一个请求的响应结果里, 可能与第一个请求相同, 也可能不同, 参考后文简化版源码实现</td>
 </tr>
 <tr>
   <td>下载版本快照</td>
   <td>HfApi.snapshot_download</td>
-  <td>【待研究】</td>
+  <td>{endpoint}/{repo_id}/resolve/{revision}/{filename} HEAD</br>{endpoint}/{repo_id}/resolve/{revision}/{filename} GET</td>
   <td>实质上是 repo_info 查询后, 对版本里的文件使用 hf_hub_download 方法来完成的</td>
 </tr>
 <tr>
@@ -1213,7 +1213,7 @@ git config lfs.customtransfer.multipart.args lfs-multipart-upload <local_dir>
 - `PreTrainedModel`, `PratrainedConfig`, `PreTrainedTokenizerBase` 各自实现了一个 `from_pretrained` 方法, 此方法在底层调用了 `HfApi.hf_hub_download` 方法
 - `PreTrainedModel`, `PratrainedConfig`, `PreTrainedTokenizerBase` 都继承了 `PushToHubMixin` 这个类, 这个类本质上主要就是定义 `push_to_hub` 这一个方法, 但这个类并没有继承 `huggingface_hub.ModelHubMixin`, 而 `push_to_hub` 在底层调用了 `HfApi.create_commit` 方法 (可能还会涉及到 `HfApi.create_repo` 和 `HfApi.create_branch` 方法的调用)
 
-另外, 关于 assets 目录, 🤗 datasets 实际上也没有使用 huggingface_hub 里[推荐](https://huggingface.co/docs/huggingface_hub/v0.17.3/en/guides/manage-cache#caching-assets)的 `huggingface_hub.cached_assets_path` 接口做缓存根目录: ` ~/.cache/huggingface/assets/datasets`, 而是使用了 `~/.cache/huggingface/datasets` 这个目录作为缓存根目录
+另外, 关于 assets 目录, 🤗 datasets 实际上也没有使用 huggingface_hub 里[推荐](https://huggingface.co/docs/huggingface_hub/v0.17.3/en/guides/manage-cache#caching-assets)的 `huggingface_hub.cached_assets_path` 接口做缓存根目录: `~/.cache/huggingface/assets/datasets`, 而是使用了 `~/.cache/huggingface/datasets` 这个目录作为缓存根目录
 
 
 ## 🤗 Transformers
