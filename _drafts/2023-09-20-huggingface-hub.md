@@ -32,6 +32,22 @@ labels: [huggingface, hub]
 - Hub (服务): 包含 Models, Datasets, Spaces, 这三者首先是作为 git 远程仓库存在的, 因此 🤗 提供了一个 Git 仓库的托管平台, 而且类似于 GitHub, 而这个平台还具备一些额外功能, 例如: 权限管理, 每个 Dataset 仓库还有数据预览功能, 每个 Model 仓库一般都有模型卡片页, 帮助读者快速上手, Space 仓库还免费提供了将仓库内的代码部署的功能
 - 软件与开发工具: 首先是 🤗 Hub Python Library, 然后是各种下游库, 最知名的是 🤗 Transformers 库
 
+下载模型
+
+```bash
+# 代理设置: ~/.bashrc
+# WSL2
+hostip=$(cat /etc/resolv.conf |grep -oP '(?<=nameserver\ ).*')
+# Windows 本机
+# hostip="127.0.0.1"
+export HTTP_PROXY="http://${hostip}:7890"
+export HTTPS_PROXY="http://${hostip}:7890"
+
+GIT_LFS_SKIP_SMUDGE=0 git clone --no-checkout https://huggingface.co/Qwen/Qwen-14B-Chat-Int4
+cd Qwen-14B-Chat-Int4
+git lfs fetch --all
+```
+
 ## Huggingface Hub Python Library
 
 ### 主要 API

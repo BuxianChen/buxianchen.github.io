@@ -28,7 +28,43 @@ Rails 是一套基于 Ruby 的著名开发框架，Jekyll 也是基于此框架�
 </table>
 
 ### 安装过程
-参照 [jekyll 官网](https://jekyllrb.com/docs/installation/) 的安装步骤即可。
+
+方法一 (WSL2 上强烈不推荐): 参照 [jekyll 官网](https://jekyllrb.com/docs/installation/) 的安装步骤。
+
+方法二 (推荐): 避免安装系统级 Ruby
+
+参考:
+
+- 不使用 apt-get: [stackoverflow](https://stackoverflow.com/questions/75452016/installation-messed-up-with-ruby-unable-to-install-jekyll), [https://dontusesystemruby.com/#/](https://dontusesystemruby.com/#/)
+- RVM: [http://rvm.io/](http://rvm.io/)
+
+RVM 应该相当于是 anaconda, 可以安装多个版本的 Ruby.
+
+```bash
+# 安装 RVM: http://rvm.io/
+gpg2 --keyserver keyserver.ubuntu.com --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3 7D2BAF1CF37B13E2069D6956105BD0E739499BDB
+curl -sSL https://get.rvm.io | bash -s stable
+
+# 参考: https://stackoverflow.com/questions/75452016/installation-messed-up-with-ruby-unable-to-install-jekyll
+rvm install 2.7
+rvm use 2.7.2 --default
+rvm -v
+rvm gemset update
+gem install jekyll -v 4.2.1
+jekyll -v
+cd /path/to/username.github.io
+
+# 根据 Gemfile 安装依赖与运行
+bundle install
+bundle exec jekyll serve
+```
+
+gem 换源:
+
+```bash
+gem sources --add https://gems.ruby-china.com/ --remove https://rubygems.org/
+gem sources -l
+```
 
 ### GitHub Pages
 
