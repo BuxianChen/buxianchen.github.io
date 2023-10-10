@@ -140,6 +140,12 @@ f = np.memmap('memmapped.dat', dtype=np.float32, mode='r', shape=(nrows, ncols))
 show_memory()
 tensor = torch.tensor(f)  # 内存使用显著增加
 show_memory()
+
+# 写入模式
+f = np.memmap('memmapped.dat', dtype=np.float32, mode='w+', shape=(nrows, ncols))
+for i in range(nrows):
+    f[i, :] = np.random.rand(ncols)
+f.flush()
 ```
 
 ### `torch.tensor(device="meta")`
