@@ -118,6 +118,42 @@ output = model.generate(
 texts = tokenizer.batch_decode(output["sequences"])
 ```
 
+## 底层工具
+
+本篇博客涉及的底层核心工具实质上来源于如下
+
+### `np.memmap`
+
+```python
+import numpy as np
+import psutil
+import torch
+nrows, ncols = 100000, 1000
+
+def show_memory():
+    mem = psutil.virtual_memory()
+    print("Used", mem.used / 1024 / 1024)
+    print("Free", mem.free / 1024 / 1024)
+
+show_memory()
+f = np.memmap('memmapped.dat', dtype=np.float32, mode='r', shape=(nrows, ncols))  # 几乎不变
+show_memory()
+tensor = torch.tensor(f)  # 内存使用显著增加
+show_memory()
+```
+
+### `torch.tensor(device="meta")`
+
+`pytorch>=1.9.0` 引入的特性
+
+```python
+import torch
+large_tensor = torch.randn(100000, 200000, device="meta")  # 几乎不占内存
+linear = torch.nn.Linear(200000, 100000, device="meta")
+out = linear(large_tensor)
+out.shape    # 能查看shape, 但没有实际数据
+```
+
 ## <font color=red>原理总结</font>
 
 这里先对上述代码的原理做一个介绍, 不想太过深入地学习源码只需要看这里的描述或者参考 [官方文档]([https://huggingface.co/docs/accelerate/v0.19.0/en/usage_guides/big_modeling]) 和 [官方博客](https://huggingface.co/blog/accelerate-large-models) 即可, 在上述 `from_pretrained` 的过程中, 实际上发生了如下几件事情:
