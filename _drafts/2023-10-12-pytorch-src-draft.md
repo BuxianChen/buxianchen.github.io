@@ -112,3 +112,70 @@ THPFunction_methods;
 
 - `torch._C._FunctionBase` (python API) 就是 `torch/csrc/autograd/python_function.cpp:THPFunctionType` (C++ API)
 - `torch.autograd.Function.apply` (python API) 就是 `torch/csrc/autograd/python_function.cpp:THPFunction_apply` (C++ API)
+
+<hr/>
+
+Pytorch 对 tensor 进行 index 操作, 行为是一致的
+
+> When accessing the contents of a tensor via indexing, PyTorch follows Numpy behaviors that basic indexing returns views, while advanced indexing returns a copy. Assignment via either basic or advanced indexing is in-place. See more examples in [Numpy indexing documentation](https://numpy.org/doc/stable/reference/arrays.indexing.html).
+
+```python
+import torch
+x = torch.arange(4)
+y = x[:3]
+z = x[[0, 1, 2]]
+w = x[1:3]
+
+# 这三者相同
+x.storage().data_ptr()
+y.storage().data_ptr()
+w.storage().data_ptr()
+
+# 这个跟前面的不一样
+z.storage().data_ptr()
+
+# 注意: 这种看上去是copy也会影响原始的 x, 估计是 Tensor.__getitem__ 与 Tensor.__setitem__ 语义有区别
+x[[1, 2]] = 3
+x  # [0, 3, 3]
+```
+
+<hr/>
+
+一个 tensor, 内部最重要的属性包含:
+
+- `size`: tuple of int
+- `strides`: tuple of int
+- `offset`: int, 通常是 0
+- `array` 或者说 `data_ptr`: 实际数据的指针
+
+备注: 由于 `strides` 属性, 所以 advanced indexing 时一定是做成 copy 返回
+
+```python
+import torch
+x = torch.arange(48).view((6, 8)).contiguous()
+y = x[[1, 0, 4, 4]]  # 如果 y 是 view 的话, 就没法定义 y 的 strides 了
+```
+
+一个具体的例子:
+
+```python
+import torch
+x = torch.arange(48).view((6, 8)).contiguous()
+y = x[1:5:2, 1:4]
+i1, j1, k1 = 1, 5, 2
+i2, j2, k2 = 1, 4, 1
+
+x_stride_1, x_stride_2 = x.stride()  # (8, 1)
+x.storage_offset()                   # 0
+
+y_stride_1, y_stride_2 = y.stride()  # (16, 1)
+y.storage_offset()                   # 9
+y.size()                             # (2, 3)
+
+x.storage().data_ptr() == y.storage().data_ptr()
+y_stride_1 == x_stride_1 * k1
+y_stride_2 == x_stride_2 * k2
+y.storage_offset() ==  x_stride_1 * i1 + x_stride_2 * i2
+```
+
+[https://ezyang.github.io/stride-visualizer/index.html](https://ezyang.github.io/stride-visualizer/index.html): broadcast 的实现是 stride 为 0?
