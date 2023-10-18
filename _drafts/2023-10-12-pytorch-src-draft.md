@@ -47,6 +47,14 @@ pip install torch==2.1.0
 
 <hr/>
 
+源码安装: 浅克隆一个 tag
+
+```bash
+git clone --branch v2.1.0 --depth=1 --recurse-submodules --shallow-submodules https://github.com/pytorch/pytorch
+```
+
+<hr/>
+
 `aten/src/README.md`
 
 ```
