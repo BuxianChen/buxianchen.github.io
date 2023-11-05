@@ -418,3 +418,8 @@ if __name__ == "__main__":
 ```
 
 ### 多机多卡
+
+
+## 原理
+
+![https://fairscale.readthedocs.io/en/latest/_images/ddp.png](https://fairscale.readthedocs.io/en/latest/_images/ddp.png)
