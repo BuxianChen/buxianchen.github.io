@@ -422,4 +422,9 @@ if __name__ == "__main__":
 
 ## 原理
 
+参考文献:
+
+- 一篇中文博客: [https://www.cnblogs.com/rossiXYZ/p/15553384.html](https://www.cnblogs.com/rossiXYZ/p/15553384.html)
+- 一篇英文博客: [https://www.telesens.co/2019/04/04/distributed-data-parallel-training-using-pytorch-on-aws/](https://www.telesens.co/2019/04/04/distributed-data-parallel-training-using-pytorch-on-aws/)
+
 ![https://fairscale.readthedocs.io/en/latest/_images/ddp.png](https://fairscale.readthedocs.io/en/latest/_images/ddp.png)
