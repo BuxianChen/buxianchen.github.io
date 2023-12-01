@@ -135,3 +135,11 @@ print(decompose(M()).code)
 - GraphModule
 - Tracer
 - Interpreter, Transformer
+
+Node: 一个 Node 代表一个 op
+
+- `opcode`: string, 六者之一: `["placeholder", "get_attr", "call_function", "call_module", "call_method", "output"]`
+- `name`: string, 节点名称, 即 op 的输出, 在同一个 `Graph` 列, `Graph.nodes` 列表里节点名称各不相同.
+- `target`: string/callable, 即 op 本身, 对于 `"call_function"` 类型, `target` 是函数本身, 其余情况下均可用字符串代替
+- `args`: tuple[Uinon[Node, Any]], 位置参数, 元素有可能会是 `Node` 类型
+- `kwargs`: Dict[str, Union[Node, Any]], 关键字参数, 元素有可能会是 `Node` 类型

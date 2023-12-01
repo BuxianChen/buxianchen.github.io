@@ -187,3 +187,31 @@ y.storage_offset() ==  x_stride_1 * i1 + x_stride_2 * i2
 ```
 
 [https://ezyang.github.io/stride-visualizer/index.html](https://ezyang.github.io/stride-visualizer/index.html): broadcast 的实现是 stride 为 0?
+
+
+<hr/>
+
+`torch.utils._pytree.py`: `tree_map`, `tree_flatten`, `tree_unflatten`
+
+```python
+from torch.utils._pytree import tree_map, tree_flatten, tree_unflatten, SUPPORTED_NODES
+import copy
+import torch
+d = {"a": [1, 2, {"b": [1, 2]}], "c": [2, (1, 2)]}
+x, context = tree_flatten(d)
+y = tree_unflatten(x, context)
+z = tree_map(lambda x: x+1, d)
+print(x)  # [1, 2, 1, 2, 2, 1, 2]
+print(y)  # {'a': [1, 2, {'b': [1, 2]}], 'c': [2, (1, 2)]}
+print(z)  # {'a': [2, 3, {'b': [2, 3]}], 'c': [3, (2, 3)]}
+
+old_support = copy.deepcopy(SUPPORTED_NODES)
+SUPPORTED_NODES.pop(dict)
+w, context = tree_flatten([{"a": 1}, {"c": 2}, [3, 4]])
+# 注意: 这里取消了对字典的展开
+print(w)  # [{'a': 1}, {'c': 2}, 3, 4]
+
+torch.utils._pytree.SUPPORTED_NODES = copy.deepcopy(old_support)
+v = tree_map(lambda x: x+1, d)
+print(v)  # {'a': [2, 3, {'b': [2, 3]}], 'c': [3, (2, 3)]}
+```
