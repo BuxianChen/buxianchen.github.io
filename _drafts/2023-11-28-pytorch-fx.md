@@ -241,3 +241,231 @@ root_fn = _patch_function(root_fn, 3)
 # 必须得用下面这种方式调用, 不能用原本的方式调用
 # root_fn(x, (y, z), {"d": 1, "e": 2})
 ```
+
+- [https://stackoverflow.com/questions/16064409/how-to-create-a-code-object-in-python](https://stackoverflow.com/questions/16064409/how-to-create-a-code-object-in-python)
+- [https://github.com/python/cpython/blob/3.8/Include/code.h](https://github.com/python/cpython/blob/3.8/Include/code.h)
+
+
+系统化地研究 python AST
+
+- python 官方文档: Language Reference?
+- [ast 模块官方文档](https://docs.python.org/3/library/dis.html)
+- [ast 详解文章](https://greentreesnakes.readthedocs.io/en/latest/index.html)
+
+其他:
+- [博客](https://towardsdatascience.com/understanding-python-bytecode-e7edaae8734d)
+- [博客](https://medium.com/@noransaber685/demystifying-python-bytecode-a-guide-to-understanding-and-analyzing-code-execution-6a163cb83bd1)
+
+例子
+
+```python
+import dis
+code_string = """
+def countdown(n):
+    while n > 0:
+        print('T-minus', n)
+        n -= 1
+    print('Blastoff!')
+"""
+code = compile(code_string, "test", "exec")
+dis.dis(code)
+```
+
+```
+  2           0 LOAD_CONST               0 (<code object countdown at 0x7f8b55a74450, file "test", line 2>)
+              2 LOAD_CONST               1 ('countdown')
+              4 MAKE_FUNCTION            0
+              6 STORE_NAME               0 (countdown)
+              8 LOAD_CONST               2 (None)
+             10 RETURN_VALUE
+
+Disassembly of <code object countdown at 0x7f8b55a74450, file "test", line 2>:
+  3     >>    0 LOAD_FAST                0 (n)
+              2 LOAD_CONST               1 (0)
+              4 COMPARE_OP               4 (>)
+              6 POP_JUMP_IF_FALSE       28
+
+  4           8 LOAD_GLOBAL              0 (print)
+             10 LOAD_CONST               2 ('T-minus')
+             12 LOAD_FAST                0 (n)
+             14 CALL_FUNCTION            2
+             16 POP_TOP
+
+  5          18 LOAD_FAST                0 (n)
+             20 LOAD_CONST               3 (1)
+             22 INPLACE_SUBTRACT
+             24 STORE_FAST               0 (n)
+             26 JUMP_ABSOLUTE            0
+
+  6     >>   28 LOAD_GLOBAL              0 (print)
+             30 LOAD_CONST               4 ('Blastoff!')
+             32 CALL_FUNCTION            1
+             34 POP_TOP
+             36 LOAD_CONST               0 (None)
+             38 RETURN_VALUE
+```
+
+```python
+import dis
+def countdown(n):
+    while n > 0:
+        print('T-minus', n)
+        n -= 1
+    print('Blastoff!')
+dis.dis(countdown)
+
+
+code_obj = countdown.__code__
+names = [name for name in code_obj.__dir__() if name.startswith("co_")]
+
+for name in names:
+    print(name)
+    print(getattr(code_obj, name))
+    print("-"*40)
+```
+
+```
+  2     >>    0 LOAD_FAST                0 (n)
+              2 LOAD_CONST               1 (0)
+              4 COMPARE_OP               4 (>)
+              6 POP_JUMP_IF_FALSE       28
+
+  3           8 LOAD_GLOBAL              0 (print)
+             10 LOAD_CONST               2 ('T-minus')
+             12 LOAD_FAST                0 (n)
+             14 CALL_FUNCTION            2
+             16 POP_TOP
+
+  4          18 LOAD_FAST                0 (n)
+             20 LOAD_CONST               3 (1)
+             22 INPLACE_SUBTRACT
+             24 STORE_FAST               0 (n)
+             26 JUMP_ABSOLUTE            0
+
+  5     >>   28 LOAD_GLOBAL              0 (print)
+             30 LOAD_CONST               4 ('Blastoff!')
+             32 CALL_FUNCTION            1
+             34 POP_TOP
+             36 LOAD_CONST               0 (None)
+             38 RETURN_VALUE
+```
+
+```
+co_argcount
+1
+----------------------------------------
+co_posonlyargcount
+0
+----------------------------------------
+co_kwonlyargcount
+0
+----------------------------------------
+co_nlocals
+1
+----------------------------------------
+co_stacksize
+3
+----------------------------------------
+co_flags
+67
+----------------------------------------
+co_code
+b'|\x00d\x01k\x04r\x1ct\x00d\x02|\x00\x83\x02\x01\x00|\x00d\x038\x00}\x00q\x00t\x00d\x04\x83\x01\x01\x00d\x00S\x00'
+----------------------------------------
+co_consts
+(None, 0, 'T-minus', 1, 'Blastoff!')
+----------------------------------------
+co_names
+('print',)
+----------------------------------------
+co_varnames
+('n',)
+----------------------------------------
+co_freevars
+()
+----------------------------------------
+co_cellvars
+()
+----------------------------------------
+co_filename
+/tmp/ipykernel_2353/2861170246.py
+----------------------------------------
+co_name
+countdown
+----------------------------------------
+co_firstlineno
+1
+----------------------------------------
+co_lnotab
+b'\x00\x01\x08\x01\n\x01\n\x01'
+```
+
+**co_code 与 dis.Bytecode 的关系**
+
+从下面的例子可以看出对应关系如下: **`co_code` 每两个字节代表一条指令, 其中第一个字节代表 opname, 第二个字节代表操作数 arg**, 全部的指令集为: `dis.opname`
+
+```python
+import dis
+print(list(enumerate(dis.opname)))
+[(0, '<0>'), (1, 'POP_TOP'), (2, 'ROT_TWO'), (3, 'ROT_THREE'), (4, 'DUP_TOP'), (5, 'DUP_TOP_TWO'), (6, 'ROT_FOUR'), (7, '<7>'), ...]
+```
+
+```python
+print(countdown.__code__.co_code)
+# b'|\x00d\x01k\x04r\x1ct\x00d\x02|\x00\x83\x02\x01\x00|\x00d\x038\x00}\x00q\x00t\x00d\x04\x83\x01\x01\x00d\x00S\x00'
+bytecode = dis.Bytecode(countdown)
+for instuction in bytecode:
+    print(instuction)
+
+for i, x in enumerate(countdown.__code__.co_code):
+    if i % 2 == 0:
+        print(x, end="\t")
+    else:
+        print(x, end="\n")
+```
+
+```
+Instruction(opname='LOAD_FAST', opcode=124, arg=0, argval='n', argrepr='n', offset=0, starts_line=2, is_jump_target=True)
+Instruction(opname='LOAD_CONST', opcode=100, arg=1, argval=0, argrepr='0', offset=2, starts_line=None, is_jump_target=False)
+Instruction(opname='COMPARE_OP', opcode=107, arg=4, argval='>', argrepr='>', offset=4, starts_line=None, is_jump_target=False)
+Instruction(opname='POP_JUMP_IF_FALSE', opcode=114, arg=28, argval=28, argrepr='', offset=6, starts_line=None, is_jump_target=False)
+Instruction(opname='LOAD_GLOBAL', opcode=116, arg=0, argval='print', argrepr='print', offset=8, starts_line=3, is_jump_target=False)
+Instruction(opname='LOAD_CONST', opcode=100, arg=2, argval='T-minus', argrepr="'T-minus'", offset=10, starts_line=None, is_jump_target=False)
+Instruction(opname='LOAD_FAST', opcode=124, arg=0, argval='n', argrepr='n', offset=12, starts_line=None, is_jump_target=False)
+Instruction(opname='CALL_FUNCTION', opcode=131, arg=2, argval=2, argrepr='', offset=14, starts_line=None, is_jump_target=False)
+Instruction(opname='POP_TOP', opcode=1, arg=None, argval=None, argrepr='', offset=16, starts_line=None, is_jump_target=False)
+Instruction(opname='LOAD_FAST', opcode=124, arg=0, argval='n', argrepr='n', offset=18, starts_line=4, is_jump_target=False)
+Instruction(opname='LOAD_CONST', opcode=100, arg=3, argval=1, argrepr='1', offset=20, starts_line=None, is_jump_target=False)
+Instruction(opname='INPLACE_SUBTRACT', opcode=56, arg=None, argval=None, argrepr='', offset=22, starts_line=None, is_jump_target=False)
+Instruction(opname='STORE_FAST', opcode=125, arg=0, argval='n', argrepr='n', offset=24, starts_line=None, is_jump_target=False)
+Instruction(opname='JUMP_ABSOLUTE', opcode=113, arg=0, argval=0, argrepr='', offset=26, starts_line=None, is_jump_target=False)
+Instruction(opname='LOAD_GLOBAL', opcode=116, arg=0, argval='print', argrepr='print', offset=28, starts_line=5, is_jump_target=True)
+Instruction(opname='LOAD_CONST', opcode=100, arg=4, argval='Blastoff!', argrepr="'Blastoff!'", offset=30, starts_line=None, is_jump_target=False)
+Instruction(opname='CALL_FUNCTION', opcode=131, arg=1, argval=1, argrepr='', offset=32, starts_line=None, is_jump_target=False)
+Instruction(opname='POP_TOP', opcode=1, arg=None, argval=None, argrepr='', offset=34, starts_line=None, is_jump_target=False)
+Instruction(opname='LOAD_CONST', opcode=100, arg=0, argval=None, argrepr='None', offset=36, starts_line=None, is_jump_target=False)
+Instruction(opname='RETURN_VALUE', opcode=83, arg=None, argval=None, argrepr='', offset=38, starts_line=None, is_jump_target=False)
+```
+
+```
+124	0
+100	1
+107	4
+114	28
+116	0
+100	2
+124	0
+131	2
+1	0
+124	0
+100	3
+56	0
+125	0
+113	0
+116	0
+100	4
+131	1
+1	0
+100	0
+83	0
+```
