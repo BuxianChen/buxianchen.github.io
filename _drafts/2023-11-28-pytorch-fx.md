@@ -169,19 +169,6 @@ Create a function object.
     a tuple that supplies the bindings for free variables
 ```
 
-一些调试技巧(获取当前函数范围外的变量):
-
-```python
-# 加在 torch.fx._symbolic_trace.py:Tracer.create_args_for_root 函数内
-import inspect
-caller_frame = inspect.currentframe().f_back
-frame = caller_frame
-# inspect.stack()[-9].filename
-for i in range(13):
-    frame=frame.f_back
-mymodule = frame.f_globals["mymodule"]
-```
-
 
 Node: 一个 Node 代表一个 op
 
@@ -192,7 +179,7 @@ Node: 一个 Node 代表一个 op
 - `kwargs`: Dict[str, Union[Node, Any]], 关键字参数, 元素有可能会是 `Node` 类型
 
 
-`torch.fx._symbolic_proxy._patch_function`: 以下是简化后的核心实现
+`torch.fx._symbolic_proxy._patch_function`: 以下是简化后的核心实现 (`Python >= 3.8`)
 
 ```python
 import inspect
@@ -242,11 +229,13 @@ root_fn = _patch_function(root_fn, 3)
 # root_fn(x, (y, z), {"d": 1, "e": 2})
 ```
 
+参考如下资料理解:
+
 - [https://stackoverflow.com/questions/16064409/how-to-create-a-code-object-in-python](https://stackoverflow.com/questions/16064409/how-to-create-a-code-object-in-python)
 - [https://github.com/python/cpython/blob/3.8/Include/code.h](https://github.com/python/cpython/blob/3.8/Include/code.h)
 
 
-系统化地研究 python AST
+系统化地研究 Python AST: 主要涉及的内容包括 `ast`, `dis` 模块
 
 - python 官方文档: Language Reference?
 - [ast 模块官方文档](https://docs.python.org/3/library/dis.html)
@@ -256,7 +245,7 @@ root_fn = _patch_function(root_fn, 3)
 - [博客](https://towardsdatascience.com/understanding-python-bytecode-e7edaae8734d)
 - [博客](https://medium.com/@noransaber685/demystifying-python-bytecode-a-guide-to-understanding-and-analyzing-code-execution-6a163cb83bd1)
 
-例子
+**浅尝内置函数 `compile`, `dis.dis`, `fn.__code__` 的基本用法**
 
 ```python
 import dis
@@ -469,3 +458,196 @@ Instruction(opname='RETURN_VALUE', opcode=83, arg=None, argval=None, argrepr='',
 100	0
 83	0
 ```
+
+**函数字节码变换例子: 将加法改为乘法**
+
+```python
+import types
+import dis
+import struct
+
+# 原始函数
+def original_function(a, b):
+    return a + b - a
+
+# 获取原始函数的字节码对象
+original_bytecode = original_function.__code__
+
+# 输出原始函数的字节码指令
+print("Original bytecode:")
+dis.dis(original_bytecode)
+
+# 测试修改前的函数
+result = original_function(2, 3)
+print("Result of original function:", result)
+
+idx2op = {idx: op for idx, op in enumerate(dis.opname)}
+op2idx = {op: idx for idx, op in enumerate(dis.opname)}
+
+# 修改字节码
+new_code = []
+for i, x in enumerate(original_bytecode.co_code):
+    c = x
+    if i % 2 == 0:
+        if idx2op[x] == "BINARY_ADD":
+            c = op2idx["BINARY_MULTIPLY"]
+    new_code.append(c)
+n = len(new_code)
+new_code = struct.pack(f"{n}B", *new_code)
+
+
+# 构造修改后的代码对象
+modified_code = types.CodeType(
+    original_bytecode.co_argcount,       # 参数数量
+    original_bytecode.co_posonlyargcount,# 限定位置参数
+    original_bytecode.co_kwonlyargcount, # 关键字参数数量
+    original_bytecode.co_nlocals,        # 局部变量数量
+    original_bytecode.co_stacksize,      # 栈大小
+    original_bytecode.co_flags,          # 标志
+    new_code,                            # 修改后的字节码
+    original_bytecode.co_consts,         # 常量
+    original_bytecode.co_names,          # 名称
+    original_bytecode.co_varnames,       # 变量名
+    original_bytecode.co_filename,       # 文件名
+    original_bytecode.co_name,           # 函数名
+    original_bytecode.co_firstlineno,    # 第一行行号
+    original_bytecode.co_lnotab,         # 行号表
+    original_bytecode.co_freevars,       # 自由变量
+    original_bytecode.co_cellvars        # Cell 变量
+)
+
+# 构造修改后的函数
+modified_function = types.FunctionType(
+    modified_code,
+    original_function.__globals__,
+    original_function.__name__,
+    original_function.__defaults__,
+    original_function.__closure__
+)
+
+
+print("Modified bytecode:")
+dis.dis(modified_function.__code__)
+
+# 测试修改后的函数
+result = modified_function(2, 3)
+print("Result of modified function:", result)
+```
+
+输出结果
+
+```
+Original bytecode:
+  7           0 LOAD_FAST                0 (a)
+              2 LOAD_FAST                1 (b)
+              4 BINARY_ADD
+              6 LOAD_FAST                0 (a)
+              8 BINARY_SUBTRACT
+             10 RETURN_VALUE
+Result of original function: 3
+Modified bytecode:
+  7           0 LOAD_FAST                0 (a)
+              2 LOAD_FAST                1 (b)
+              4 BINARY_MULTIPLY
+              6 LOAD_FAST                0 (a)
+              8 BINARY_SUBTRACT
+             10 RETURN_VALUE
+Result of modified function: 4
+```
+
+
+**`Tracer().trace()` 的总体逻辑**
+
+
+调试代码
+
+```python
+import torch
+from typing import Dict, List
+from torch.fx import symbolic_trace
+
+class MyModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.param = torch.nn.Parameter(torch.rand(3, 4))
+        self.linear = torch.nn.Linear(4, 5)  # weight: (out_channels, in_channels)
+    
+    def forward(
+        self,
+        x: Dict[str, torch.Tensor],
+        y: torch.Tensor,
+        *args: List[Dict[str, torch.Tensor]],
+        **kwargs: Dict[str, torch.Tensor]
+    ):
+        out = x["a"]
+        out -= x["b"]
+        out += y
+        out += args[0]["u"]
+        out += args[0]["v"]
+        out += kwargs["c"]
+
+        out = ((out+self.param)@self.linear.weight.T)
+        out = out.clamp(0.0, max=1.0)
+        return out
+
+mymodule = MyModule()
+my_x = {
+    "a": torch.rand(3, 4),
+    "b": torch.rand(3, 4)
+}
+my_y = torch.rand(3, 4)
+my_args = [{"u": torch.rand(3, 4)}, {"v": torch.rand(3, 4)}]
+my_kwargs = {"c": torch.rand(3, 4)}
+print(mymodule(my_x, my_y, *my_args, **my_kwargs))
+
+symbolic_traced: torch.fx.GraphModule = symbolic_trace(mymodule, concrete_args={"x": my_x})
+```
+
+一些调试技巧(获取当前函数范围外的变量):
+
+```python
+# 加在 torch.fx._symbolic_trace.py:Tracer.create_args_for_root 函数内
+import inspect
+caller_frame = inspect.currentframe().f_back
+frame = caller_frame
+# inspect.stack()[-9].filename
+for i in range(13):
+    frame=frame.f_back
+mymodule = frame.f_globals["mymodule"]
+```
+
+源码分析
+
+```python
+def trace(self, root, concrete_args):
+    # step 0: root 如果是 module, fn = module.forward
+
+    # step 1:
+    # 输入:
+    #   fn: 假设原本的 fn 的函数签名是 forward(self, x: Dict[str, Tensor], y: Tensor, *args: List[Dict], **kwargs),
+    #   即实参是 forward(
+    #           {"a": torch.rand(2, 3), "b": torch.rand(3, 4)}  # x
+    #           torch.rand(4, 5),                               # y
+    #           torch.rand(2, 3),                               # args
+    #           c = torch.rand(4, 5)                            # kwargs
+    #           )
+    #  concrete_args: {"x": {"a": torch.rand(2, 3), "b": torch.rand(3, 4)}}
+    # 输出:
+    #   fn: 函数签名变为 forward(*args), 但如果需要调用 fn, 必须这样传实参(一共5个)
+    #       fn(
+    #           module,
+    #           torch.rand(2, 3),   # 对应于 concrete_args["x"]["a"]
+    #           torch.rand(3, 4),   # 对应于 concrete_args["x"]["b"]
+    #           y,
+    #           args,               # args 是一个列表, 不能传 *args
+    #           kwargs,             # kwargs 是一个字典, 不能传 **kwargs
+    #       )
+    #   args: [module, concrete_args["x"]["a"], concrete_args["x"]["b"], Proxy(y), Proxy(_args), Proxy(_kwargs)]
+    #   备注: 在不指定 concrete_args 的情况下, fn 的函数签名为 fn(self, x, y, args, kwargs), args 为 [module, Proxy(x), Proxy(y), Proxy(_args), Proxy(_kwargs)]
+    #   备注: create_args_for_root 源码中的 flatten_fn 的分支仅在指定 concrete_args 时才有可能被触发
+    fn, args = self.create_args_for_root(fn, isinstance(root, torch.nn.Module), concrete_args)   # checkpoint_1
+
+    # TODO: 后面的内容需要继续研究
+```
+
+未解之谜: 按上面的理解, 在 `checkpoint_1` 处调用 `fn` (打断点, 通过 `inspect` 模块调用上层 frame) 似乎得不到正确的结果, 且重复调用结果也不一致.
