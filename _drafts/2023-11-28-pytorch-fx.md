@@ -556,6 +556,81 @@ Result of modified function: 4
 ```
 
 
+
+**frame 对象**
+
+`help(type(inspect.currentframe()))` 的输出
+
+```
+Help on class frame in module builtins:
+
+class frame(object)
+ |  Methods defined here:
+ |  
+ |  __delattr__(self, name, /)
+ |      Implement delattr(self, name).
+ |  
+ |  __getattribute__(self, name, /)
+ |      Return getattr(self, name).
+ |  
+ |  __repr__(self, /)
+ |      Return repr(self).
+ |  
+ |  __setattr__(self, name, value, /)
+ |      Implement setattr(self, name, value).
+ |  
+ |  __sizeof__(...)
+ |      F.__sizeof__() -> size of F in memory, in bytes
+ |  
+ |  clear(...)
+ |      F.clear(): clear most references held by the frame
+ |  
+ |  ----------------------------------------------------------------------
+ |  Data descriptors defined here:
+ |  
+ |  f_back
+ |  
+ |  f_builtins
+ |  
+ |  f_code
+ |  
+ |  f_globals
+ |  
+ |  f_lasti
+ |  
+ |  f_lineno
+ |  
+ |  f_locals
+ |  
+ |  f_trace
+ |  
+ |  f_trace_lines
+ |  
+ |  f_trace_opcodes
+```
+
+`f_back`: 指向调用栈中的上一帧。
+`f_code`: 当前执行帧所对应的代码对象。
+`f_locals`: 当前帧的局部变量字典。
+`f_globals`: 当前帧的全局变量字典。
+`f_lineno`: 当前执行的行号。
+`f_lasti`: 最后执行的指令在字节码中的索引。
+`f_builtins`: 当前帧的内置命名空间
+
+```python
+import inspect
+
+def f():
+    print(dir(inspect.currentframe()))
+    print(inspect.currentframe().f_code.co_name)         # 'f'
+    # '<module>' 就是顶级帧了
+    print(inspect.currentframe().f_back.f_code.co_name)  # '<module>'
+    print(inspect.currentframe().f_back.f_back)  # None
+
+f()
+```
+
+
 **`Tracer().trace()` 的总体逻辑**
 
 
@@ -618,7 +693,199 @@ mymodule = frame.f_globals["mymodule"]
 
 源码分析
 
+分析目标是: 
+
 ```python
+symbolic_trace(module: torch.nn.Module)
+```
+
+也就是:
+
+```python
+tracer = torch.fx.Tracer()
+graph: Graph = tracer.trace(module: torch.nn.Module)
+gm = torch.fx.GraphModule(module, graph)
+```
+
+
+首先分析一些辅助函数:
+
+```python
+# ==================== Tracer.create_proxy ===================================
+class Graph:
+    def create_node(self, op: str, target: 'Target',
+                    args: Optional[Tuple['Argument', ...]] = None,
+                    kwargs: Optional[Dict[str, 'Argument']] = None,
+                    name: Optional[str] = None,
+                    type_expr: Optional[Any] = None) -> Node:
+        assert op in ('call_function', 'call_method', 'get_attr', 'call_module', 'placeholder', 'output')
+        args = () if args is None else args
+        kwargs = {} if kwargs is None else kwargs
+        candidate = name if name is not None else self._target_to_str(target)
+        name = self._graph_namespace.create_name(candidate, None)
+        n = Node(self, name, op, target, args, kwargs, type_expr)
+        self._graph_namespace.associate_name_with_obj(name, n)
+        self._insert(n)
+        self._len += 1
+        return n
+
+class TracerBase:
+    def create_node(self, kind : str, target : Target,
+                    args : Tuple[Argument, ...], kwargs : Dict[str, Argument], name : Optional[str] = None,
+                    type_expr : Optional[Any] = None) -> Node:
+        if kind == 'call_function' and self.check_mutable_operations:  # 可忽略?
+            check_for_mutable_operation(target, args, kwargs)
+        node = self.graph.create_node(kind, target, args, kwargs, name, type_expr)
+        if self.module_stack:
+            node.meta['nn_module_stack'] = copy.copy(self.module_stack)
+        return node
+
+    # 简化版源码
+    def create_proxy(self, kind: str, target: Target, args: Tuple[Any, ...], kwargs: Dict[str, Any],
+                     name: Optional[str] = None, type_expr : Optional[Any] = None):
+        args_ = self.create_arg(args)
+        kwargs_ = self.create_arg(kwargs)
+        assert isinstance(args_, tuple)
+        assert isinstance(kwargs_, dict)
+        node = self.create_node(kind, target, args_, kwargs_, name, type_expr)
+        proxy = self.proxy(node)  # Proxy(node, self)
+        return proxy
+        
+# =================== _create_wrapped_func ============================
+# 如果原始函数orig_fn的实参不包含Proxy类型,则原封不动,否则创建node代替函数调用并将node添加至graph中,并返回Proxy
+def _create_wrapped_func(orig_fn):
+    @functools.wraps(orig_fn)
+    def wrapped(*args, **kwargs):
+        # 如果args和kwargs中有任何一个叶子元素是Proxy类型,那么proxy是最后一个是Proxy类型的叶子节点,否则proxy是None
+        proxy = _find_proxy(args, kwargs)
+        if proxy is not None:
+            return_proxy = proxy.tracer.create_proxy("call_function", orig_fn, args, kwargs)
+            return_proxy.node.meta["is_wrapped"] = True
+            return return_proxy
+        return orig_fn(*args, **kwargs)
+    return wrapped
+
+# =============================== _Patcher ================================
+# patch 和 patch_method 都是用作"属性"替换, 并同时在 self.patches_made 中做记录,
+# 在 with _Patcher() as patcher 上下文退出时按 self.patches_made 倒序替换回原始属性
+# patch 和 patch_method 的区别仅在于 patch 是用于字典的替换, patch_method 用于类的属性替换
+# 完整源码如下:
+class _Patcher:
+    def __init__(self):
+        super().__init__()
+        self.patches_made: List[_PatchedFn] = []
+        self.visited: Set[int] = set()
+
+    def patch(self, frame_dict: Dict[str, Any], name: str, new_fn: Callable, deduplicate: bool = True):
+        new_fn.__fx_already_patched = deduplicate  # type: ignore[attr-defined]
+        if name not in frame_dict and hasattr(builtins, name):
+            self.patches_made.append(_PatchedFnDel(frame_dict, name, None))
+        elif getattr(frame_dict[name], "__fx_already_patched", False):
+            return
+        else:
+            self.patches_made.append(_PatchedFnSetItem(frame_dict, name, frame_dict[name]))
+        frame_dict[name] = new_fn
+
+    def patch_method(self, cls: type, name: str, new_fn: Callable, deduplicate: bool = True):
+        new_fn.__fx_already_patched = deduplicate  # type: ignore[attr-defined]
+        orig_fn = getattr(cls, name)
+        if getattr(orig_fn, "__fx_already_patched", False):
+            return
+        self.patches_made.append(_PatchedFnSetAttr(cls, name, orig_fn))
+        setattr(cls, name, new_fn)
+
+    # visit_once 不关键, 仅仅是一个"备忘录"
+    def visit_once(self, thing: Any):
+        idx = id(thing)
+        if idx in self.visited:
+            return False
+        self.visited.add(idx)
+        return True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        while self.patches_made:
+            self.patches_made.pop().revert()
+        self.visited.clear()
+
+# 将 frame_dict 中的所有 callable 都替换掉
+def _autowrap_check(patcher: _Patcher, frame_dict: Dict[str, Any], function_ids: Set[int]):
+    if patcher.visit_once(frame_dict):
+        for name, value in frame_dict.items():
+            if (not name.startswith("_") and callable(value) and id(value) in function_ids):
+                patcher.patch(frame_dict, name, _create_wrapped_func(value))
+
+# 将 fn 所在模块(即.py文件)的所有顶级符号(函数/类名/变量名) 添加到全局 _wrapped_fns_to_patch 列表里(仅作记录)
+# fn 必须是模块的顶级函数
+def wrap(fn):
+    ...
+
+# 这个函数会被导入模块时被调用, 因此会带来将所有 _symbolic_trace.py 下定义的顶级符号添加到全局 _wrapped_fns_to_patch 列表里(仅做记录)
+@wrap
+def _assert_is_none(value, msg):
+    assert value is None, msg
+```
+
+然后先整体看一下 `Tracer` 类
+
+```python
+class Tracer:
+    def __init__(self,
+        autowrap_modules: Tuple[ModuleType] = (math,),
+        autowrap_functions: Tuple[Callable, ...] = (),
+        param_shapes_constant: bool = False,
+    ) -> None
+        ...
+        # 这两个属性在 trace 方法中会被使用到, 这里可以暂时不管
+        # autowrap_modules (default): (math,)
+        # autowrap_functions (default): ()
+        self._autowrap_function_ids: Set[int] = {
+            id(value)
+            for name, value in chain(*[m.__dict__.items() for m in autowrap_modules])
+            if not name.startswith("_") and callable(value)
+        }
+        self._autowrap_function_ids.update({id(f) for f in autowrap_functions})
+        ...
+
+    # 重点方法
+    def create_arg(self, a: Any) -> "Argument":
+        ...
+    
+    # 辅助方法
+    def is_leaf_module(self, mod: torch.nn.Module, module_qualified_name: str):
+        ...
+
+    # 辅助方法
+    def path_of_module(self, mod) -> str:
+        ...
+    
+    # 重点方法: 用于替换Module.forward方法
+    def call_module(self, m, forward, args, kwargs):
+        ...
+    
+    # 重点方法: 用于替换Module.__getattr__方法
+    def getattr(self, attr, attr_val, parameter_proxy_cache):
+        ...
+    
+    # 重点方法: 用于构造 forward 函数的输入 Proxy
+    def create_args_for_root(self, root_fn, is_module, concrete_args=None):
+        ...
+    
+    # 伪代码: TODO
+    def trace(self, root, concrete_args) -> Graph:
+        ...
+
+    def __deepcopy__(self, memo):
+        ...
+```
+
+然后分析 trace 函数
+
+
+```python
+# Tracer.trace 方法
 def trace(self, root, concrete_args):
     # step 0: root 如果是 module, fn = module.forward
 
@@ -645,9 +912,57 @@ def trace(self, root, concrete_args):
     #   args: [module, concrete_args["x"]["a"], concrete_args["x"]["b"], Proxy(y), Proxy(_args), Proxy(_kwargs)]
     #   备注: 在不指定 concrete_args 的情况下, fn 的函数签名为 fn(self, x, y, args, kwargs), args 为 [module, Proxy(x), Proxy(y), Proxy(_args), Proxy(_kwargs)]
     #   备注: create_args_for_root 源码中的 flatten_fn 的分支仅在指定 concrete_args 时才有可能被触发
-    fn, args = self.create_args_for_root(fn, isinstance(root, torch.nn.Module), concrete_args)   # checkpoint_1
+    fn, args = self.create_args_for_root(fn, isinstance(root, torch.nn.Module), concrete_args)   # 【注意点1】
+
+    with _Patcher() as patcher:
+        # patcher 带有一个属性 patches_made, 它会记录一个列表, 列表中的每一项是一个元组: (cls/frame_dict, name, ori_value)
+        # 每个代表被替换的 new_value (ori_value 和 new_value 一般都是函数/方法) 的原始信息, 以便在 patcher.__exit__() 时进行恢复
+        
+        # 原地替换 Module.__getattr__ 为 Tracer.getattr (这个新方法的行为是先调用Module.__getattr__,然后根据返回结果类型创建Proxy返回)
+        patcher.patch_method(torch.nn.Module, "__getattr__", module_getattr_wrapper, deduplicate=False)
+
+        @functools.wraps(_orig_module_call)
+        def module_call_wrapper(mod, *args, **kwargs):
+            def forward(*args, **kwargs):
+                return _orig_module_call(mod, *args, **kwargs)
+            _autowrap_check(
+                patcher,
+                getattr(getattr(mod, "forward", mod), "__globals__", {}),
+                self._autowrap_function_ids,
+            )
+            return self.call_module(mod, forward, args, kwargs)
+
+        # module_call_wrapper 的行为是: 
+        patcher.patch_method(torch.nn.Module, "__call__", module_call_wrapper, deduplicate=False)
+        _patch_wrapped_functions(patcher)
+        _autowrap_check(patcher, fn_globals, self._autowrap_function_ids)
+        for module in self._autowrap_search:
+            _autowrap_check(
+                patcher, module.__dict__, self._autowrap_function_ids
+            )
+        self.create_node(
+            "output",
+            "output",
+            (self.create_arg(fn(*args)),),
+            {},
+            type_expr=fn.__annotations__.get("return", None),
+        )
+
+    self.submodule_paths = None
 
     # TODO: 后面的内容需要继续研究
 ```
 
-未解之谜: 按上面的理解, 在 `checkpoint_1` 处调用 `fn` (打断点, 通过 `inspect` 模块调用上层 frame) 似乎得不到正确的结果, 且重复调用结果也不一致.
+未解之谜: 按上面的理解, 在 `【注意点1】` 处调用 `fn` (打断点, 通过 `inspect` 模块调用上层 frame) 似乎得不到正确的结果, 且重复调用结果也不一致.
+
+
+小技巧:
+
+```python
+x = [1, 2]
+def foo():
+    pass
+
+foo.__globals__['x'] = 3
+print(x)   # 3
+```
