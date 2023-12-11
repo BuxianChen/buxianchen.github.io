@@ -966,3 +966,127 @@ def foo():
 foo.__globals__['x'] = 3
 print(x)   # 3
 ```
+
+以下为 pytorch 1.8 里的源码, 供参考:
+
+```python
+# Node 类型则应用函数, 否则不应用
+def map_arg(a: Argument, fn: Callable[[Node], Argument]) -> Argument:
+    return map_aggregate(a, lambda x: fn(x) if isinstance(x, Node) else x)
+
+
+# map_arg 函数使用了 map_aggregate 函数, 其进一步使用到了一些高级技巧: 使用 type 构建不可变列表及不可变字典, 实现如下:
+def _no_mutation(self, *args, **kwargs):
+    raise NotImplementedError(f"'{type(self).__name__}' object does not support mutation. {_help_mutation}")
+
+def _create_immutable_container(base, mutable_functions):
+    container = type('immutable_' + base.__name__, (base,), {})
+    for attr in mutable_functions:
+        setattr(container, attr, _no_mutation)
+    return container
+
+immutable_list = _create_immutable_container(list,
+    ['__delitem__', '__iadd__', '__imul__', '__setitem__', 'append', 'clear', 'extend', 'insert', 'pop', 'remove'])
+# __reduce__ 与 pickle 模块相关, 相关的魔术方法还有 __reduce_ex__, __getstate__, __setstate__
+immutable_list.__reduce__ = lambda self: (immutable_list, (tuple(iter(self)),))
+immutable_dict = _create_immutable_container(dict, ['__delitem__', '__setitem__', 'clear', 'pop', 'popitem', 'update'])
+immutable_dict.__reduce__ = lambda self: (immutable_dict, (iter(self.items()),))
+
+```
+
+`collect_tensor_attrs`: 这个有些奇特, 似乎只捕获到"悬挂"的tensor或者子模型(位于 `_modules` 中)的"悬挂"tensor, 不确定在后续的作用
+
+```python
+class N(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(3, 3)
+        self.relu = torch.nn.ReLU()
+        self.a = torch.rand(2)
+        # N().__dict__["b"]: KeyError       # N().b: OK
+        self.b = torch.nn.Parameter(torch.rand(1))  # 不会被捕获, 因为它会被自动放入 _parameters 中, 而不会是 __dict__["b"]
+    def forward(self, x):
+        pass
+
+class M(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        # torch.nn.ModuleList 最终会落到 Module.add_module, 其本质是对 self._modules 进行添加
+        self.blocks = torch.nn.ModuleList([N() for i in range(3)])  # 这里面的 N().a 会被捕获
+        self.blocks_list = [N() for i in range(2)]                  # 这里面的 N().a 不会被捕获
+        self.layer = N()
+    def forward(self, x):
+        pass
+
+from typing import List
+from torch._C import ScriptObject
+
+tensor_attrs = {}
+def collect_tensor_attrs(m : torch.nn.Module, prefix_atoms : List[str]):
+    for k, v in m.__dict__.items():
+        if isinstance(v, (torch.Tensor, ScriptObject)):
+            tensor_attrs[v] = '.'.join(prefix_atoms + [k])
+    for k, v in m.named_children():
+        collect_tensor_attrs(v, prefix_atoms + [k])
+
+collect_tensor_attrs(M(), [])
+print(tensor_attrs)
+"""
+{tensor([0.9359, 0.2638]): 'blocks.0.a',
+ tensor([0.1203, 0.3830]): 'blocks.1.a',
+ tensor([0.1230, 0.9907]): 'blocks.2.a',
+ tensor([0.7182, 0.1366]): 'layer.a'}
+"""
+print(N().__dict__)
+"""
+{'training': True,
+ '_parameters': OrderedDict([('b', Parameter containing:
+               tensor([0.0683], requires_grad=True))]),
+ '_buffers': OrderedDict(),
+ '_non_persistent_buffers_set': set(),
+ '_backward_hooks': OrderedDict(),
+ '_is_full_backward_hook': None,
+ '_forward_hooks': OrderedDict(),
+ '_forward_pre_hooks': OrderedDict(),
+ '_state_dict_hooks': OrderedDict(),
+ '_load_state_dict_pre_hooks': OrderedDict(),
+ '_load_state_dict_post_hooks': OrderedDict(),
+ '_modules': OrderedDict([('linear',
+               Linear(in_features=3, out_features=3, bias=True)),
+              ('relu', ReLU())]),
+ 'a': tensor([0.6327, 0.7129])}
+"""
+```
+
+
+调用栈
+
+```
+trace:
+
+collect_tensor_attrs(...)  # 不知道用在哪, 注释说用在 create_arg
+fn_globals = fn.__globals__
+self.create_args_for_root
+    多个 self.create_proxy
+        self.create_arg
+        self.create_node
+        self.proxy
+    也许使用底层API创建函数修改被追踪的函数签名(仅适用于有可变参数的情形)
+with _Patcher() as patcher:
+    patcher.patch_method(Module.__getattr__)
+    patcher.patch_method(Module.__call__)
+    # 对全局变量 _wrapped_fns_to_patch, _wrapped_methods_to_patch分别进行patch和patch_method, 这里buildin的用法待研究
+    _patch_wrapped_functions(patcher)
+    
+    
+    # 
+    _autowrap_check(patcher, fn_globals, self._autowrap_function_ids)
+
+    # self._autowrap_search 实际上就是 Tracer 的默认实例化参数 autowrap_modules , 一般就只是包含 math
+    for module in self._autowrap_search:
+        _autowrap_check(patcher, module.__dict__, self._autowrap_function_ids)
+
+    self.create_node('output', 'output', (self.create_arg(fn(*args)),), {},
+                        type_expr=fn.__annotations__.get('return', None))
+
+```
