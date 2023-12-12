@@ -71,7 +71,38 @@ node.args: List[Node]
 node.kwargs: Dict[str, Node]
 ```
 
-`Proxy`: `F.relu` 这种函数可以作用在 `Proxy` 上
+`Proxy`: `F.relu` 这种函数可以作用在 `Proxy` 上, 原因是 `__torch_function__` 协议, 此协议大致如下: 当调用 `torch.max`, `torch.nn.functional.softmax` 时, 会优先根据输入参数检查是否带有 `__torch_function__`, 如果带有则会优先将实参进行适当的"转换", 触发对 `__torch_function__` 的调用.
+
+`torch.nn.functional.softmax` 源码(`torch==1.8.0`)如下, 以供参考 (`torch.max` 似乎在 C 代码中实现, 暂时不深究)
+
+```python
+# torch/nn/functional.py
+def softmax(input: Tensor, dim: Optional[int] = None, _stacklevel: int = 3, dtype: Optional[int] = None) -> Tensor:
+    # 此分支适用于包含了__torch_function__的自定义类型
+    if has_torch_function_unary(input):  # torch._C.has_torch_function_unary
+        return handle_torch_function(softmax, (input,), input, dim=dim, _stacklevel=_stacklevel, dtype=dtype)
+    if dim is None:
+        dim = _get_softmax_dim("softmax", input.dim(), _stacklevel)
+    # 当 input 是 Tensor 类型时, 会执行下面的逻辑
+    if dtype is None:
+        ret = input.softmax(dim)
+    else:
+        ret = input.softmax(dim, dtype=dtype)
+    return ret
+
+# torch/overrides.py
+def handle_torch_function(public_api: Callable, relevant_args: Iterable[Any], *args, **kwargs) -> Any:
+    overloaded_args = _get_overloaded_args(relevant_args)
+
+    types = tuple(map(type, overloaded_args))
+    for overloaded_arg in overloaded_args:
+        result = overloaded_arg.__torch_function__(public_api, types, args, kwargs)  # 此处进入 __torch_function__
+        if result is not NotImplemented:
+            return result
+
+    func_name = '{}.{}'.format(public_api.__module__, public_api.__name__)
+    raise TypeError("no implementation found for '{}' on types that implement __torch_function__: {}".format(func_name, [type(arg) for arg in overloaded_args]))
+```
 
 
 ```python
@@ -178,6 +209,58 @@ Node: 一个 Node 代表一个 op
 - `args`: tuple[Uinon[Node, Any]], 位置参数, 元素有可能会是 `Node` 类型
 - `kwargs`: Dict[str, Union[Node, Any]], 关键字参数, 元素有可能会是 `Node` 类型
 
+`Node` 与 `Graph` 的关系如下:
+
+```python
+graph: Graph
+# graph 实际上是一个 Node 链表, 因此 graph 中只持有一个 root 节点 (Node 类型)
+# self._root = Node(self, '', 'root', '', (), {})
+graph.nodes: _node_list  # @property, _node_list 实质上也是一个类(命名方式没有按驼峰命名)
+
+node_list = list(graph.nodes)
+
+node = node_list[0]
+
+# node_list 实质上一个环状双向链表:
+# [x: Node, y: Node, output: Node, root: Node]
+# x._next = y,         x._prev = root
+# y._next = output,    y._prev = x
+# output._next = root, output._prev = y
+# root._next = x,      root._prev = output
+```
+
+`Node` 还包含几个属性:
+
+```python
+node._input_nodes   # Dict[Node, None]: _args, _kwargs 代表了计算得到此节点需要的输入, 而 _input_nodes 是 args 和 kwargs 中类型是 Node 的元素
+node._args          # tuple, 这里面也会包含 _input_nodes 中的节点
+node._kwargs        # dict
+
+node.users          # Dict[Node, None]: 代表此节点被用在后续哪些节点里
+node._prev
+node._next
+node._erased: bool  # iter(graph.nodes) 的返回结果不会保留 _erased 为 True 的节点
+```
+
+```python
+class Node:
+    # 此函数仅在 self.args, self.kwargs 被赋值, 或者是 Node.__init__ 方法时才会被调用
+    # 实质上是在维护整个 graph 中每个节点的 _input_nodes, users 属性
+    def __update_args_kwargs(self, new_args : Tuple['Argument', ...], new_kwargs : Dict[str, 'Argument']):
+        self._args = new_args
+        self._kwargs = new_kwargs
+
+        for old_use in self._input_nodes.keys():
+            old_use.users.pop(self)
+
+        self._input_nodes = {}
+        # map_arg 的作用是: 递归检查 self._args 的每个元素, 如果是 Node 类型, 则执行函数
+        map_arg(self._args, lambda n: self._input_nodes.setdefault(n))
+        map_arg(self._kwargs, lambda n: self._input_nodes.setdefault(n))
+
+        for new_use in self._input_nodes.keys():
+            new_use.users.setdefault(self)
+```
 
 `torch.fx._symbolic_proxy._patch_function`: 以下是简化后的核心实现 (`Python >= 3.8`)
 
@@ -654,7 +737,7 @@ class MyModule(torch.nn.Module):
         *args: List[Dict[str, torch.Tensor]],
         **kwargs: Dict[str, torch.Tensor]
     ):
-        out = x["a"]
+        out = x["a"].clone()
         out -= x["b"]
         out += y
         out += args[0]["u"]
@@ -912,7 +995,7 @@ def trace(self, root, concrete_args):
     #   args: [module, concrete_args["x"]["a"], concrete_args["x"]["b"], Proxy(y), Proxy(_args), Proxy(_kwargs)]
     #   备注: 在不指定 concrete_args 的情况下, fn 的函数签名为 fn(self, x, y, args, kwargs), args 为 [module, Proxy(x), Proxy(y), Proxy(_args), Proxy(_kwargs)]
     #   备注: create_args_for_root 源码中的 flatten_fn 的分支仅在指定 concrete_args 时才有可能被触发
-    fn, args = self.create_args_for_root(fn, isinstance(root, torch.nn.Module), concrete_args)   # 【注意点1】
+    fn, args = self.create_args_for_root(fn, isinstance(root, torch.nn.Module), concrete_args)
 
     with _Patcher() as patcher:
         # patcher 带有一个属性 patches_made, 它会记录一个列表, 列表中的每一项是一个元组: (cls/frame_dict, name, ori_value)
@@ -952,8 +1035,6 @@ def trace(self, root, concrete_args):
 
     # TODO: 后面的内容需要继续研究
 ```
-
-未解之谜: 按上面的理解, 在 `【注意点1】` 处调用 `fn` (打断点, 通过 `inspect` 模块调用上层 frame) 似乎得不到正确的结果, 且重复调用结果也不一致.
 
 
 小技巧:
@@ -1067,10 +1148,10 @@ trace:
 collect_tensor_attrs(...)  # 不知道用在哪, 注释说用在 create_arg
 fn_globals = fn.__globals__
 self.create_args_for_root
-    多个 self.create_proxy
-        self.create_arg
-        self.create_node
-        self.proxy
+    TracerBase.create_proxy('placeholder', name, default, {})
+        Tracer.create_arg -> super().create_arg
+        TracerBase.create_node: 完全是 self.graph.create_node
+        TracerBase.proxy: Proxy(node, self)
     也许使用底层API创建函数修改被追踪的函数签名(仅适用于有可变参数的情形)
 with _Patcher() as patcher:
     patcher.patch_method(Module.__getattr__)
