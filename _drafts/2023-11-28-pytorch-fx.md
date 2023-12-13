@@ -6,9 +6,12 @@ labels: [pytorch]
 ---
 
 
-参考资料: [https://pytorch.org/docs/stable/fx.html](https://pytorch.org/docs/stable/fx.html)
+参考资料
 
+官方文档: [https://pytorch.org/docs/stable/fx.html](https://pytorch.org/docs/stable/fx.html)
+论文: [torch.fx 论文](https://arxiv.org/abs/2112.08429)
 知乎源码分析: [博客](https://zhuanlan.zhihu.com/p/625690498)
+知乎一篇分析 `torch.fx`, `torch.jit`, `torch.compiler` 的博客: [博客](https://zhuanlan.zhihu.com/p/644590863)
 
 torch.fx 应用例子:
 
@@ -166,6 +169,96 @@ print(decompose(M()).code)
 - GraphModule
 - Tracer
 - Interpreter, Transformer
+
+源码分析的前置知识: 
+
+**`__getattr__`, `__getattribute__`, `__call__`**
+
+```python
+class M:
+    def __init__(self):
+        self.a = 1
+    # 第一优先级, 无论是取属性还是调用方法都会被触发
+    def __getattribute__(self, name):
+        print("__getattribute__")
+        return object.__getattribute__(self, name)  # 不能用super,会造成无限递归
+    # __getattribute__ 找不到时会被触发
+    def __getattr__(self, name):
+        print("__getattr__")
+        return None
+    def __call__(self, x):
+        print("__call__")
+    def foo(self):
+        print("foo method")
+
+m = M()
+print("="*20)
+print("trace: m(1)")
+m(1)
+
+print("="*20)
+print("trace: m.__call__(1)")
+m.__call__(1)
+
+print("="*20)
+print("trace: m.foo()")
+m.foo()
+
+print("="*20)
+print("trace: m.foo")
+m.foo
+
+print("="*20)
+print("trace: m.a")
+m.a
+
+print("="*20)
+print("trace: m.b")
+m.b
+```
+
+输出
+
+```
+====================
+trace: m(1)
+__call__
+====================
+trace: m.__call__(1)
+__getattribute__
+__call__
+====================
+trace: m.foo()
+__getattribute__
+foo method
+====================
+trace: m.foo
+__getattribute__
+====================
+trace: m.a
+__getattribute__
+====================
+trace: m.b
+__getattribute__
+__getattr__
+```
+
+**`torch.nn.Module.__getattr__`**
+
+`Module` 重载了 `__getattr__` 方法: 其主要逻辑是按 `_parameters`, `_buffers`, `_modules` 的顺序搜索属性
+
+```python
+class MyModule(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.layer_a = torch.nn.Linear(3, 3)  # 实际上会被存储在 self._modules 中, 而不是 self.__dict__['layer_a']
+    def __getattr__(self, name):
+        print("Module.__getattr__ called")
+        return super().__getattr__(name)
+model = MyModule()
+layer = model.layer_a  # Module.__getattr__ called
+```
+
 
 `torch.fx` 源码里用到的主要工具:
 
@@ -966,35 +1059,71 @@ class Tracer:
 
 然后分析 trace 函数
 
+**`concrete_args` 有什么用?**
 
 ```python
-# Tracer.trace 方法
+# 假设原本的 fn 的函数签名是 forward(self, x: Dict[str, Tensor], y: Tensor, *args: List[Dict], **kwargs),
+# 调用方式如下:
+forward(
+    {"a": torch.rand(2, 3), "b": torch.rand(3, 4)}         # x
+    torch.rand(4, 5),                                      # y
+    *(torch.rand(2, 3),),                                  # args
+    **{"c": torch.rand(4, 5)},                             # kwargs
+    )
+concrete_args: {"x": {"a": torch.rand(2, 3), "b": torch.rand(3, 4)}}
+```
+
+**torch==1.8.0**
+
+不指定 `concrete_args` 时
+
+```python
+# fn: 函数签名为 fn(self, x, y, args, kwargs), 即: fn.__code__.co_argcount=5
+fn(
+    module,
+    {"a": torch.rand(2, 3), "b": torch.rand(3, 4)}  # x
+    y,                                              # y
+    args,                                           # args 是一个列表, 不能传 *args
+    kwargs,                                         # kwargs 是一个字典, 不能传 **kwargs
+)
+args = [module, Proxy(x), Proxy(y), Proxy(_args), Proxy(_kwargs)]
+fn(*args)
+```
+
+指定 `concrete_args` 时
+
+```python
+# fn 同上
+args = [module, concrete_args['x'], Proxy(y), Proxy(_args), Proxy(_kwargs)]
+```
+
+**torch==2.0.0**
+
+不指定 `concrete_args` 与 `torch==1.8.0` 时一致, 指定 `concrete_args` 时
+
+```python
+# fn: 函数签名变为 forward(*args), 即: fn.__code__.co_argcount=0
+# 如果需要调用 fn, 必须这样传实参(一共6个)
+fn(
+    module,
+    torch.rand(2, 3),   # 对应于 concrete_args["x"]["a"]
+    torch.rand(3, 4),   # 对应于 concrete_args["x"]["b"]
+    y,
+    args,               # args 是一个列表, 不能传 *args
+    kwargs,             # kwargs 是一个字典, 不能传 **kwargs
+)
+args = [module, concrete_args["x"]["a"], concrete_args["x"]["b"], Proxy(y), Proxy(_args), Proxy(_kwargs)]
+fn(*args)
+```
+
+
+```python
+# Tracer.trace 方法主体部分
 def trace(self, root, concrete_args):
     # step 0: root 如果是 module, fn = module.forward
 
-    # step 1:
-    # 输入:
-    #   fn: 假设原本的 fn 的函数签名是 forward(self, x: Dict[str, Tensor], y: Tensor, *args: List[Dict], **kwargs),
-    #   即实参是 forward(
-    #           {"a": torch.rand(2, 3), "b": torch.rand(3, 4)}  # x
-    #           torch.rand(4, 5),                               # y
-    #           torch.rand(2, 3),                               # args
-    #           c = torch.rand(4, 5)                            # kwargs
-    #           )
-    #  concrete_args: {"x": {"a": torch.rand(2, 3), "b": torch.rand(3, 4)}}
-    # 输出:
-    #   fn: 函数签名变为 forward(*args), 但如果需要调用 fn, 必须这样传实参(一共5个)
-    #       fn(
-    #           module,
-    #           torch.rand(2, 3),   # 对应于 concrete_args["x"]["a"]
-    #           torch.rand(3, 4),   # 对应于 concrete_args["x"]["b"]
-    #           y,
-    #           args,               # args 是一个列表, 不能传 *args
-    #           kwargs,             # kwargs 是一个字典, 不能传 **kwargs
-    #       )
-    #   args: [module, concrete_args["x"]["a"], concrete_args["x"]["b"], Proxy(y), Proxy(_args), Proxy(_kwargs)]
-    #   备注: 在不指定 concrete_args 的情况下, fn 的函数签名为 fn(self, x, y, args, kwargs), args 为 [module, Proxy(x), Proxy(y), Proxy(_args), Proxy(_kwargs)]
-    #   备注: create_args_for_root 源码中的 flatten_fn 的分支仅在指定 concrete_args 时才有可能被触发
+    # step 1: 此步骤说明见上
+    # 备注 (torch==2.0.0): create_args_for_root 源码中的 flatten_fn 的分支仅在指定 concrete_args 时才有可能被触发
     fn, args = self.create_args_for_root(fn, isinstance(root, torch.nn.Module), concrete_args)
 
     with _Patcher() as patcher:
@@ -1032,9 +1161,73 @@ def trace(self, root, concrete_args):
         )
 
     self.submodule_paths = None
-
-    # TODO: 后面的内容需要继续研究
+    return self.graph
 ```
+
+**Proxy**
+
+Proxy 代理的算子
+
+- 魔术方法: 例如 `a + b`, 这里 `a` 和 `b` 原本是 `Tensor` 类型, 经过替换后都是 `Proxy` 类型, 因此在 trace 时由 `Proxy.__add__` 等魔术方法实现, 建立 `call_function` 节点
+- `torch.add`: `Proxy.__torch_function__` 实现, 建立 `call_function` 节点 
+- `Tensor.add`: `Proxy.__torch_function__` 实现, 建立 `call_method` 节点
+
+再加上
+
+- `Module(...)`: 在 trace 之前, 首先会把 `Module` 的 `__call__` 做全局替换, 因此这类 `out=self.layer_1(out)` 这种代码会进入被替换的函数, 建立 `call_module` 节点
+- `Module.attrname`: 在 trace 之前, 首先会把 `Module` 的 `__getattr__` 做全局替换, 因此这类 `self.layer_1` 这种代码会进入被替换的函数, 建立 `get_attr` 节点
+- 输入参数的替换: 建立 `placeholder` 节点
+- 输出结果在 trace 函数中手动建立 `output` 节点
+
+自定义的追踪函数
+
+```python
+# 全局变量
+_wrapped_fns_to_patch : List[Tuple[dict, str]]
+_wrapped_methods_to_patch : List[Tuple[type, str]]
+# 实例变量: autowrap_functions, param_shapes_constant 是 torch==1.8.0 没有的
+Tracer.__init__(self, autowrap_modules, autowrap_functions, param_shapes_constant=False)
+```
+
+以上便是所有的 node 类型和可追踪的数据操作的全集, 对于不属于上述类型的操作, 则直接进行运算得到结果
+
+tracer 的局限性:
+
+分支条件直接报错
+
+```python
+if x.sum() > 0:  # 为 x.sum() 以及 {} > 0 建立节点, 然后执行 proxy.__bool__ 时会引发错误(Proxy.__bool__函数报错)
+    x = -x
+```
+
+外部函数调用不能正确追踪
+
+```python
+a = torch.tensor(np.random.random(2, 2))  # 这里先对np.random.random直接执行得到结果, 随后直接执行 torch.tensor 得到结果, 这两步都不建立 node
+x = x * a  # 检查到 a 不在被 trace 的 model 的属性里, 先执行 setattr(model, "_tensor_constant0", a), 然后为他建立一个 Proxy, 最后执行 x*a 时建立一个node
+# z = x * x  # 此时x变量被绑定到了上述返回的node里, 所以这里继续执行 Proxy * Proxy 的操作
+```
+
+动态 shape: TODO, 根本原因应该也是 Proxy 不能做实际运算: Proxy.shape 仍然是 Proxy 的操作
+
+怎么适当解开上述局限性(Tracer高级特性): TODO
+
+
+单元测试代码
+
+```python
+from torch.fx import Proxy, Tracer, Graph
+tracer = Tracer()
+tracer.graph = Graph()
+proxy = tracer.create_proxy('placeholder', "x", (), {},)
+
+proxy + 1                 # call_function
+proxy.add(1)              # call_method
+torch.add(proxy, 2)       # call_function
+print([node.op for node in list(tracer.graph.nodes)])
+```
+
+完整的模型(一个包含各种操作的实际的Module): TODO
 
 
 小技巧:
@@ -1138,6 +1331,67 @@ print(N().__dict__)
  'a': tensor([0.6327, 0.7129])}
 """
 ```
+
+`Proxy` 类的源码阅读需要注意如下动态的部分 (注意以下是 `torch==1.8.0` 的代码): 简单来说, 就是为 `Proxy` 追加了 `__add__`, `__radd__` 这类魔术方法.
+
+```python
+class Proxy:
+    ...
+
+reflectable_magic_methods = {
+    'add': '{} + {}',
+    'sub': '{} - {}',
+    'mul': '{} * {}',
+    'floordiv': '{} // {}',
+    'truediv': '{} / {}',
+    'div': '{} / {}',
+    'mod': '{} % {}',
+    'pow': '{} ** {}',
+    'lshift': '{} << {}',
+    'rshift': '{} >> {}',
+    'and': '{} & {}',
+    'or': '{} | {}',
+    'xor': '{} ^ {}',
+    'getitem': '{}[{}]'
+}
+
+magic_methods = dict({
+    'eq': '{} == {}',
+    'ne': '{} != {}',
+    'lt': '{} < {}',
+    'gt': '{} > {}',
+    'le': '{} <= {}',
+    'ge': '{} >= {}',
+    'pos': '+{}',
+    'neg': '-{}',
+    'invert': '~{}'}, **reflectable_magic_methods)
+
+for method in magic_methods:
+    def scope(method):
+        def impl(*args, **kwargs):
+            tracer = args[0].tracer
+            target = getattr(operator, method)
+            return tracer.create_proxy('call_function', target, args, kwargs)
+        impl.__name__ = method
+        as_magic = f'__{method}__'
+        setattr(Proxy, as_magic, impl)
+    scope(method)
+
+def _define_reflectable(orig_method_name):
+    method_name = f'__r{orig_method_name}__'
+
+    def impl(self, rhs):
+        target = getattr(operator, orig_method_name)
+        return self.tracer.create_proxy('call_function', target, (rhs, self), {})
+    impl.__name__ = method_name
+    impl.__qualname__ = method_name
+    setattr(Proxy, method_name, impl)
+
+for orig_method_name in reflectable_magic_methods:
+    _define_reflectable(orig_method_name)
+```
+
+
 
 
 调用栈
