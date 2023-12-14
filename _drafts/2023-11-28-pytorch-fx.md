@@ -5,24 +5,33 @@ date: 2023-11-28 11:10:04 +0800
 labels: [pytorch]
 ---
 
+## 概述
 
-参考资料
+**参考资料**
 
-官方文档: [https://pytorch.org/docs/stable/fx.html](https://pytorch.org/docs/stable/fx.html)
-论文: [torch.fx 论文](https://arxiv.org/abs/2112.08429)
-知乎源码分析: [博客](https://zhuanlan.zhihu.com/p/625690498)
-知乎一篇分析 `torch.fx`, `torch.jit`, `torch.compiler` 的博客: [博客](https://zhuanlan.zhihu.com/p/644590863)
+- 官方文档: [https://pytorch.org/docs/stable/fx.html](https://pytorch.org/docs/stable/fx.html)
+- 论文: [torch.fx 论文](https://arxiv.org/abs/2112.08429)
+- 知乎源码分析: [博客](https://zhuanlan.zhihu.com/p/625690498), 笔者结合这篇博客并根据自己阅读源码反复琢磨才自觉基本理解了这篇博客
+- 知乎的一篇简单分析 torch 的三种计算图捕获技术 (`torch.fx`, `torch.jit`, `torch.compiler`) 的博客: [博客](https://zhuanlan.zhihu.com/p/644590863), 此篇博客的作者还写了一些关于 Pytorch 2.0 的一些官方文档, 知乎上也有一些相关文章
 
-torch.fx 应用例子:
+**torch.fx 应用例子**
 
 - [pytorch Conv+BN fuse](https://github.com/pytorch/pytorch/blob/main/torch/fx/experimental/optimization.py#L50)
 - [fx graph mode quantization](https://pytorch.org/docs/master/quantization.html#prototype-fx-graph-mode-quantization)
 - [huggingface optimum](https://huggingface.co/docs/optimum/main/en/torch_fx/usage_guides/optimization): 但似乎没有具体的用例
 
+**简介**
 
-`torch.fx` 模块的主要用途是使用一种方式(`torch.fx.Tracer`, 不同于 `torchscript`)分析源代码, 得到中间表示 `torch.fx.Graph`, 然后程序员可以修改这个中间表示, 最后重新转换回转换后的 python 代码. 也就是说可以完成这个 pipeline: `symbolic tracing -> intermediate representation -> transforms -> Python code generation`, 作用如下:
+AI 编译器的目标是希望把现成的模型提升运行速度或吞吐量, 以笔者目前拙见一般有几种方式:
 
-- 假设现在有很多包含 `nn.Module` 的代码, 现在希望对这些代码做统一的转换, 则可以走上面的完整 pipeline
+- 方式1: 将原始用 pytorch 写的 python 代码完全"重写".
+- 方式2: 将原始用 pytorch 写的 python 代码适当改写(改写后仍然是 Python 代码), 使得编译器能直接处理改写后的代码. 因此, 做 AI 编译器的人总是希望能尽量少地该原始代码, 或者说尽量扩大编译器能处理的东西.
+
+由于 pytorch 是 python 优先的, 为了做AI模型的静态加速, 首先是将"杂乱无章"的 python 代码转换为结构化的计算图(中间表示), 这一过程也就是所谓的"计算图捕获", 然后再执行相应的编译过程. 至今为止, pytorch 自身在这方面做了 `torch.jit` (pytorch1.0), `torch.fx`(pytorch1.8), `torch.compiler`(pytorch2.0) 的探索.
+
+`torch.fx` 模块的主要用途是使用一种方式 (`torch.fx.Tracer`, 不同于 `torchscript`) 分析源代码, 得到中间表示 `torch.fx.Graph`, 然后程序员可以修改这个中间表示, 最后重新转换回转换后的 python 代码. 也就是说可以完成这个 pipeline: `symbolic tracing -> intermediate representation -> transforms -> Python code generation`, 作用如下:
+
+- 假设现在有很多包含 `nn.Module` 的代码(例如像 huggingface transformers, timm, mmdetection 这种代码库), 现在希望对这些代码做统一的转换, 则可以走上面的完整 pipeline 来达到目的
 - 可以直接写一个中间表示的配置文件, 然后直接从配置文件转换为 python 代码
 
 总的来说, 就是可以用比较 hack 的方式修改模型, 下面是一个例子:
@@ -33,27 +42,18 @@ torch.fx 应用例子:
 import torch
 import torch.fx
 
-# Sample module
 class M(torch.nn.Module):
     def forward(self, x, y):
         return torch.add(x, y)
 
 def transform(m: torch.nn.Module,
-              tracer_class : type = fx.Tracer) -> torch.nn.Module:
+              tracer_class: type = fx.Tracer) -> torch.nn.Module:
     graph : fx.Graph = tracer_class().trace(m)
-    # FX represents its Graph as an ordered list of
-    # nodes, so we can iterate through them.
     for node in graph.nodes:
-        # Checks if we're calling a function (i.e:
-        # torch.add)
         if node.op == 'call_function':
-            # The target attribute is the function
-            # that call_function calls.
             if node.target == torch.add:
                 node.target = torch.mul
-
-    graph.lint() # Does some checks to make sure the
-                 # Graph is well-formed.
+    graph.lint()
 
     return fx.GraphModule(m, graph)
 
@@ -61,8 +61,126 @@ def transform(m: torch.nn.Module,
 m: torch.fx.GraphModule = transform(M())
 ```
 
-`symbolic_trace(module)` 实质上基本等同于 `torch.fx.GraphModule(module, torch.fx.Tracer().trace(module))`
+更多例子请参考官方文档: [https://pytorch.org/docs/stable/fx.html](https://pytorch.org/docs/stable/fx.html)
 
+本篇博客的写作目的如下:
+
+- 笔者最初只是好奇 torch 的量化算法, 其文档中提到了一种自动的用法, 其基于 `torch.fx`, 因此笔者转而研究 `torch.fx`
+- 仅仅出于好奇, `torch.fx` 是怎么捕获计算图的
+- 笔者 `torch.fx` 的官方文档时, 还是感到很多地方无法理解, 因此可能需要源码理解
+- `torch.fx` 的局限性有哪些, 哪些可以通过它的高级特性突破这些局限性, 因此也不得不研究源码
+
+## 实现原理概览及 minimal `torch.fx`
+
+TODO
+
+## 源码阅读预备知识
+
+## 源码阅读 (torch=1.8)
+
+对于上一节的例子而言, 首先需要探索的便是: 
+
+```python
+from torch.fx import symbolic_trace
+graph_module: torch.fx.GraphModule = symbolic_trace(module)
+```
+
+而其实质上等同于
+
+```python
+import torch
+tracer = torch.fx.Tracer()
+graph: torch.fx.Graph = tracer.trace(module)      # 以下主要分析这一行
+graph_module = torch.fx.GraphModule(module, graph)
+```
+
+对 `Tracer.trace` 的深入研究实际上可以串其大半个 `torch.fx` 模块, 这里首先给出相应的代码目录:
+
+```
+torch/fx/
+  - _experimental/
+  - passes/
+  - __init__.py
+  - OVERVIEW.md
+  - graph_module.py       # 主要是 GraphModule 相关, Tracer.trace 不涉及, 放在后面研究
+  - graph.py
+  - immutable_collections.py
+  - interpreter.py        # Tracer.trace 不涉及, 放在后面研究
+  - node.py
+  - proxy.py
+  - subgraph_rewriter.py  # Tracer.trace 不涉及, 放在后面研究
+  - symbolic_trace.py     # Tracer 类, 分析入口
+```
+
+### `torch.fx.Tracer` 类概览
+
+首先 `torch.fx.symbolic_trace.Tracer` 继承自 `torch.fx.proxy.TracerBase`, 且在 `torch==1.8.0` 版本中, `TracerBase` 的子类仅有 `Tracer`, 并且对外的接口也都是 `Tracer` 提供的, 在分析 `Tracer.trace` 方法之前, 先看看 `Tracer.__init__` 及 `Tracer` 类的所有方法概览(初看只需粗略看即可, 以后可以回看这里的注释):
+
+```python
+# TracerBase 没有定义 __init__ 方法
+class Tracer(TracerBase):
+    def __init__(self, autowrap_modules : Tuple[ModuleType] = (math, )):
+        super().__init__()
+        self._autowrap_function_ids: Set[int] = {
+            id(value) for name, value in chain(*[m.__dict__.items() for m in autowrap_modules])
+            if not name.startswith("_") and callable(value)}
+        self._autowrap_search: List[ModuleType] = list(autowrap_modules)
+    
+    # 重点方法: 注意 TracerBase 也定义了 create_arg 方法, 后面将进一步分析
+    def create_arg(self, a: Any) -> "Argument": ...
+    
+    # 辅助方法: 用于 Tracer.call_module 方法中, 判断一个 m(args) 是否需要直接做成一个 Node, 而不用再深入内部细节, 这里的 m 是 torch.nn.Module 的子类
+    # 这里的实现是只要是用户自定义的继承自 torch.nn.Module 的子类, 就继续深入, 否则像 torch.nn.Conv2D, torch.nn.Linear 这类就不深入
+    # torch.fx 高阶: 用户可以通过定义 Tracer 的子类重写 is_leaf_module 来改变 trace 的行为, 例如把自定义的 MLP 类也作为叶子节点
+    def is_leaf_module(self, mod: torch.nn.Module, module_qualified_name: str):
+        return m.__module__.startswith('torch.nn') and not isinstance(m, torch.nn.Sequential)
+
+    # 辅助方法, 用于 call_module 中, 帮助判断是否为叶子节点
+    def path_of_module(self, mod) -> str: ...
+    
+    # 重点方法: 用于替换Module.forward方法
+    def call_module(self, m, forward, args, kwargs): ...
+    
+    # 重点方法: 用于构造 forward 函数的输入 Proxy
+    def create_args_for_root(self, root_fn, is_module, concrete_args=None): ...
+
+    def trace(self, root, concrete_args) -> Graph: ...
+
+    # ==================== 以下为继承自 TracerBase 的方法 =====================
+    # 重点方法: 既用于 create_proxy, 也用于 trace 方法的其他地方
+    def create_node(
+        self, kind: str, target, args: Tuple[Argument, ...], kwrags: Dict[str, Argument],
+        name: str = None, type_expr=None) -> Node: ...
+
+    # Proxy.__init__ 很简单, 仅仅是变量赋值
+    def proxy(self, node: Node):
+        return Proxy(node, self)
+    
+    # 重点方法: 内部会调用 create_node
+    def create_proxy(
+        self, kind: str, target, args: Tuple[Argument, ...], kwrags: Dict[str, Argument],
+        name: str = None, type_expr=None) -> Proxy: ...
+    
+    # 重点方法: 被 Tracer 重载
+    def create_arg(self, a: Any) -> Argument: ...
+
+    # 这两个直接报错, 因为无法判断一个 Proxy 对象的值, 也没法迭代(因为它已经是叶子节点了, 内部细节无法得知)
+    # 这也就是说 `for i in x` 以及 `if x` 这种代码无法被 torch.fx 所处理
+    def to_bool(self, obj: 'Proxy') -> bool: ...
+    def iter(self, obj: 'Proxy') -> Iterator: ...
+
+    # 暂不深究
+    def keys(self, obj: 'Proxy') -> Any: ...
+```
+
+我们主要先关注 `__init__` 方法, 实际上以目前的知识还无法知道在做什么(简版实现里也没有这些操作), 后面回过头来再讲, 因此我们现在应该直接看 `trace` 函数, 但这里先稍稍打乱一下阅读顺序, 先单独看看 `Proxy` 类, 对后面会事半功倍(当然, 如果像笔者一样直接读源码, 可能最开始不太能意识到这个阅读顺序)
+
+### `torch.fx.Proxy`
+
+
+
+--------------------------------------
+## 源码阅读 (torch=2.0)
 
 `Node`:
 
