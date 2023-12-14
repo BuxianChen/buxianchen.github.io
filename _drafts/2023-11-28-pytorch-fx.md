@@ -76,123 +76,9 @@ TODO
 
 ## 源码阅读预备知识
 
-## 源码阅读 (torch=1.8)
+### `__torch_function__` 协议: TODO
 
-对于上一节的例子而言, 首先需要探索的便是: 
-
-```python
-from torch.fx import symbolic_trace
-graph_module: torch.fx.GraphModule = symbolic_trace(module)
-```
-
-而其实质上等同于
-
-```python
-import torch
-tracer = torch.fx.Tracer()
-graph: torch.fx.Graph = tracer.trace(module)      # 以下主要分析这一行
-graph_module = torch.fx.GraphModule(module, graph)
-```
-
-对 `Tracer.trace` 的深入研究实际上可以串其大半个 `torch.fx` 模块, 这里首先给出相应的代码目录:
-
-```
-torch/fx/
-  - _experimental/
-  - passes/
-  - __init__.py
-  - OVERVIEW.md
-  - graph_module.py       # 主要是 GraphModule 相关, Tracer.trace 不涉及, 放在后面研究
-  - graph.py
-  - immutable_collections.py
-  - interpreter.py        # Tracer.trace 不涉及, 放在后面研究
-  - node.py
-  - proxy.py
-  - subgraph_rewriter.py  # Tracer.trace 不涉及, 放在后面研究
-  - symbolic_trace.py     # Tracer 类, 分析入口
-```
-
-### `torch.fx.Tracer` 类概览
-
-首先 `torch.fx.symbolic_trace.Tracer` 继承自 `torch.fx.proxy.TracerBase`, 且在 `torch==1.8.0` 版本中, `TracerBase` 的子类仅有 `Tracer`, 并且对外的接口也都是 `Tracer` 提供的, 在分析 `Tracer.trace` 方法之前, 先看看 `Tracer.__init__` 及 `Tracer` 类的所有方法概览(初看只需粗略看即可, 以后可以回看这里的注释):
-
-```python
-# TracerBase 没有定义 __init__ 方法
-class Tracer(TracerBase):
-    def __init__(self, autowrap_modules : Tuple[ModuleType] = (math, )):
-        super().__init__()
-        self._autowrap_function_ids: Set[int] = {
-            id(value) for name, value in chain(*[m.__dict__.items() for m in autowrap_modules])
-            if not name.startswith("_") and callable(value)}
-        self._autowrap_search: List[ModuleType] = list(autowrap_modules)
-    
-    # 重点方法: 注意 TracerBase 也定义了 create_arg 方法, 后面将进一步分析
-    def create_arg(self, a: Any) -> "Argument": ...
-    
-    # 辅助方法: 用于 Tracer.call_module 方法中, 判断一个 m(args) 是否需要直接做成一个 Node, 而不用再深入内部细节, 这里的 m 是 torch.nn.Module 的子类
-    # 这里的实现是只要是用户自定义的继承自 torch.nn.Module 的子类, 就继续深入, 否则像 torch.nn.Conv2D, torch.nn.Linear 这类就不深入
-    # torch.fx 高阶: 用户可以通过定义 Tracer 的子类重写 is_leaf_module 来改变 trace 的行为, 例如把自定义的 MLP 类也作为叶子节点
-    def is_leaf_module(self, mod: torch.nn.Module, module_qualified_name: str):
-        return m.__module__.startswith('torch.nn') and not isinstance(m, torch.nn.Sequential)
-
-    # 辅助方法, 用于 call_module 中, 帮助判断是否为叶子节点
-    def path_of_module(self, mod) -> str: ...
-    
-    # 重点方法: 用于替换Module.forward方法
-    def call_module(self, m, forward, args, kwargs): ...
-    
-    # 重点方法: 用于构造 forward 函数的输入 Proxy
-    def create_args_for_root(self, root_fn, is_module, concrete_args=None): ...
-
-    def trace(self, root, concrete_args) -> Graph: ...
-
-    # ==================== 以下为继承自 TracerBase 的方法 =====================
-    # 重点方法: 既用于 create_proxy, 也用于 trace 方法的其他地方
-    def create_node(
-        self, kind: str, target, args: Tuple[Argument, ...], kwrags: Dict[str, Argument],
-        name: str = None, type_expr=None) -> Node: ...
-
-    # Proxy.__init__ 很简单, 仅仅是变量赋值
-    def proxy(self, node: Node):
-        return Proxy(node, self)
-    
-    # 重点方法: 内部会调用 create_node
-    def create_proxy(
-        self, kind: str, target, args: Tuple[Argument, ...], kwrags: Dict[str, Argument],
-        name: str = None, type_expr=None) -> Proxy: ...
-    
-    # 重点方法: 被 Tracer 重载
-    def create_arg(self, a: Any) -> Argument: ...
-
-    # 这两个直接报错, 因为无法判断一个 Proxy 对象的值, 也没法迭代(因为它已经是叶子节点了, 内部细节无法得知)
-    # 这也就是说 `for i in x` 以及 `if x` 这种代码无法被 torch.fx 所处理
-    def to_bool(self, obj: 'Proxy') -> bool: ...
-    def iter(self, obj: 'Proxy') -> Iterator: ...
-
-    # 暂不深究
-    def keys(self, obj: 'Proxy') -> Any: ...
-```
-
-我们主要先关注 `__init__` 方法, 实际上以目前的知识还无法知道在做什么(简版实现里也没有这些操作), 后面回过头来再讲, 因此我们现在应该直接看 `trace` 函数, 但这里先稍稍打乱一下阅读顺序, 先单独看看 `Proxy` 类, 对后面会事半功倍(当然, 如果像笔者一样直接读源码, 可能最开始不太能意识到这个阅读顺序)
-
-### `torch.fx.Proxy`
-
-
-
---------------------------------------
-## 源码阅读 (torch=2.0)
-
-`Node`:
-
-```python
-node.op: str  # "placeholder", "output", "call_function", "call_module", "call_method" 
-node.name: str
-node.target: Union[str, torch.Function, Any]
-node.args: List[Node]
-node.kwargs: Dict[str, Node]
-```
-
-`Proxy`: `F.relu` 这种函数可以作用在 `Proxy` 上, 原因是 `__torch_function__` 协议, 此协议大致如下: 当调用 `torch.max`, `torch.nn.functional.softmax` 时, 会优先根据输入参数检查是否带有 `__torch_function__`, 如果带有则会优先将实参进行适当的"转换", 触发对 `__torch_function__` 的调用.
+此协议大致如下: 当调用 `torch.max`, `torch.nn.functional.softmax` 时, 会优先根据输入参数检查是否带有 `__torch_function__`, 如果带有则会优先将实参进行适当的"转换", 触发对 `__torch_function__` 的调用.
 
 `torch.nn.functional.softmax` 源码(`torch==1.8.0`)如下, 以供参考 (`torch.max` 似乎在 C 代码中实现, 暂时不深究)
 
@@ -226,71 +112,7 @@ def handle_torch_function(public_api: Callable, relevant_args: Iterable[Any], *a
 ```
 
 
-```python
-# Note that this decomposition rule can be read as regular Python
-import torch.nn.functional as F
-def relu_decomposition(x):
-    return (x > 0) * x
-
-decomposition_rules = {}
-decomposition_rules[F.relu] = relu_decomposition
-
-def decompose(model: torch.nn.Module,
-              tracer_class : type = fx.Tracer) -> torch.nn.Module:
-    """
-    Decompose `model` into smaller constituent operations.
-    Currently,this only supports decomposing ReLU into its
-    mathematical definition: (x > 0) * x
-    """
-    graph : fx.Graph = tracer_class().trace(model)
-    new_graph = fx.Graph()
-    env = {}
-    tracer = torch.fx.proxy.GraphAppendingTracer(new_graph)
-    for node in graph.nodes:
-        if node.op == 'call_function' and node.target in decomposition_rules:
-            # By wrapping the arguments with proxies,
-            # we can dispatch to the appropriate
-            # decomposition rule and implicitly add it
-            # to the Graph by symbolically tracing it.
-            proxy_args = [
-                fx.Proxy(env[x.name], tracer) if isinstance(x, fx.Node) else x for x in node.args]
-            output_proxy = decomposition_rules[node.target](*proxy_args)
-
-            # Operations on `Proxy` always yield new `Proxy`s, and the
-            # return value of our decomposition rule is no exception.
-            # We need to extract the underlying `Node` from the `Proxy`
-            # to use it in subsequent iterations of this transform.
-            new_node = output_proxy.node
-            env[node.name] = new_node
-        else:
-            # Default case: we don't have a decomposition rule for this
-            # node, so just copy the node over into the new graph.
-            new_node = new_graph.node_copy(node, lambda x: env[x.name])
-            env[node.name] = new_node
-    return fx.GraphModule(model, new_graph)
-
-class M(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.linear = torch.nn.Linear(3, 10)
-    def forward(self, x):
-        return torch.nn.functional.relu(self.linear(x))
-
-print(decompose(M()).code)
-```
-
-源码分析需要关注这些:
-
-- Proxy
-- Node
-- Graph
-- GraphModule
-- Tracer
-- Interpreter, Transformer
-
-源码分析的前置知识: 
-
-**`__getattr__`, `__getattribute__`, `__call__`**
+### `__getattr__`, `__getattribute__` 相关
 
 ```python
 class M:
@@ -377,17 +199,33 @@ model = MyModule()
 layer = model.layer_a  # Module.__getattr__ called
 ```
 
+### Code Object
 
-`torch.fx` 源码里用到的主要工具:
+Python 程序的运行是由 Python 解释器来执行的, 尽管 Python 通常被认为是解释型语言, 但实际上 Python 代码 (`.py` 文件) 会在执行前被编译为字节码(即那些 `.pyc` 文件, 并非可执行代码, 但 Python 解释器能读懂), 然后由 Python 虚拟机解释执行. 这一点部分类似于 Java 语言的 Java 虚拟机 (JVM). 出于本文的目的, 此话题暂时不过多深究.
 
-- 利用 pytorch 的 `__torch_function__` 的功能, 运行 `forward` 方法本应该送入 `torch.Tensor` 进行运行, 但在 `torch.fx` 的实现里, 可以用 `Proxy` 来作为替代
-- `inspect`, `fn.__code__` 的综合应用: 还包括手动使用 `type(fn.__code__)(...)` (`types.CodeType`) 的方式手动构建代码对象, 以及利用 `type(fn)(fn.__code__, ...)` (`types.FunctionType`) 的方式构建函数 (我们通常是使用 `def` 语句来完成这两个过程)
+从 Python 使用者的角度来看, 我们时常与函数打交道, 而实际上, 函数也是对象, 因此它本身也有类型, 其类型是 `types.FunctionType`. 通常来说, 我们使用 `def` 语句来创建函数, 也就是创建函数对象, 或者说是 `types.FunctionType` 的实例, 例如:
+
+```python
+import types
+def foo(): pass
+type(foo) is types.FunctionType       # True, 函数对象
+type(foo.__code__) is types.CodeType  # True, Code 对象
+```
+
+因此, 我们可以想象, 应该存在着直接使用 `types.FunctionType` 的构造方法得到函数对象的方式 (简单提及一下, 实际上也可以使用 `type` 函数来定义一个我们平时用 `class` 关键字的方式来定义类), 事实上, 在 `Tracer.trace` 的实现中包含了 `inspect`, `fn.__code__` 的综合应用, 例如:
+
+- 使用 `type(fn.__code__)(...)`, 即 `types.CodeType(...)` 的方式手动构建代码对象
+- 使用 `type(fn)(fn.__code__, ...)`, 即 `types.FunctionType(...)` 的方式构建函数 (我们通常是使用 `def` 语句来完成这两个过程)
+
+这里给出 Python 3.9 版本的 `CodeType`, `FunctionType` 的构造函数信息
 
 ```python
 import types
 print(types.CodeType.__doc__)
 print(types.FunctionType.__doc__)
 ```
+
+输出结果
 
 ```
 code(argcount, posonlyargcount, kwonlyargcount, nlocals, stacksize,
@@ -411,135 +249,21 @@ Create a function object.
     a tuple that supplies the bindings for free variables
 ```
 
-
-Node: 一个 Node 代表一个 op
-
-- `opcode`: string, 六者之一: `["placeholder", "get_attr", "call_function", "call_module", "call_method", "output"]`
-- `name`: string, 节点名称, 即 op 的输出, 在同一个 `Graph` 列, `Graph.nodes` 列表里节点名称各不相同.
-- `target`: string/callable, 即 op 本身, 对于 `"call_function"` 类型, `target` 是函数本身, 其余情况下均可用字符串代替
-- `args`: tuple[Uinon[Node, Any]], 位置参数, 元素有可能会是 `Node` 类型
-- `kwargs`: Dict[str, Union[Node, Any]], 关键字参数, 元素有可能会是 `Node` 类型
-
-`Node` 与 `Graph` 的关系如下:
-
-```python
-graph: Graph
-# graph 实际上是一个 Node 链表, 因此 graph 中只持有一个 root 节点 (Node 类型)
-# self._root = Node(self, '', 'root', '', (), {})
-graph.nodes: _node_list  # @property, _node_list 实质上也是一个类(命名方式没有按驼峰命名)
-
-node_list = list(graph.nodes)
-
-node = node_list[0]
-
-# node_list 实质上一个环状双向链表:
-# [x: Node, y: Node, output: Node, root: Node]
-# x._next = y,         x._prev = root
-# y._next = output,    y._prev = x
-# output._next = root, output._prev = y
-# root._next = x,      root._prev = output
-```
-
-`Node` 还包含几个属性:
-
-```python
-node._input_nodes   # Dict[Node, None]: _args, _kwargs 代表了计算得到此节点需要的输入, 而 _input_nodes 是 args 和 kwargs 中类型是 Node 的元素
-node._args          # tuple, 这里面也会包含 _input_nodes 中的节点
-node._kwargs        # dict
-
-node.users          # Dict[Node, None]: 代表此节点被用在后续哪些节点里
-node._prev
-node._next
-node._erased: bool  # iter(graph.nodes) 的返回结果不会保留 _erased 为 True 的节点
-```
-
-```python
-class Node:
-    # 此函数仅在 self.args, self.kwargs 被赋值, 或者是 Node.__init__ 方法时才会被调用
-    # 实质上是在维护整个 graph 中每个节点的 _input_nodes, users 属性
-    def __update_args_kwargs(self, new_args : Tuple['Argument', ...], new_kwargs : Dict[str, 'Argument']):
-        self._args = new_args
-        self._kwargs = new_kwargs
-
-        for old_use in self._input_nodes.keys():
-            old_use.users.pop(self)
-
-        self._input_nodes = {}
-        # map_arg 的作用是: 递归检查 self._args 的每个元素, 如果是 Node 类型, 则执行函数
-        map_arg(self._args, lambda n: self._input_nodes.setdefault(n))
-        map_arg(self._kwargs, lambda n: self._input_nodes.setdefault(n))
-
-        for new_use in self._input_nodes.keys():
-            new_use.users.setdefault(self)
-```
-
-`torch.fx._symbolic_proxy._patch_function`: 以下是简化后的核心实现 (`Python >= 3.8`)
-
-```python
-import inspect
-def _f(): pass
-FunctionType = type(_f)   # 即: types.FunctionType
-CodeType = type(_f.__code__)  # 即: types.CodeType
-HAS_VARSTUFF = inspect.CO_VARARGS | inspect.CO_VARKEYWORDS
-
-def _patch_function(fn: FunctionType, nargs: int) -> FunctionType:
-    co = fn.__code__
-    co_flags = co.co_flags & ~HAS_VARSTUFF
-    co_args: tuple
-    co_args = (
-        nargs,
-        0,
-        0,
-        co.co_nlocals,
-        co.co_stacksize,
-        co_flags,
-        co.co_code,
-        co.co_consts,
-        co.co_names,
-        co.co_varnames,
-        co.co_filename,
-        co.co_name,
-        co.co_firstlineno,
-        co.co_lnotab,
-        co.co_freevars,
-        co.co_cellvars,
-    )
-    new_code = CodeType(*co_args)  # type: ignore[arg-type]
-    return FunctionType(
-        new_code, fn.__globals__, fn.__name__, fn.__defaults__, fn.__closure__
-    )
-    # we need to insert placeholder nodes for *args and **kwargs
-    # we can't call this function normally, otherwise it would try to unpack them
-    # instead, let's make python think that args and kwargs are normal variables
-```
-
-怎么理解最后的三行注释: 注意这里的实参即为被 trace 的函数, 即 `nn.Module.forward`, 有时候这个函数会包含一些可变参数: `args` 与 `kwargs`. 这种情况下, 原本的 `forward` 函数签名假设是 `forward(self, x, *args, **kwargs)`, 那么原本的 `forward` 函数的 `__code__.co_argcount=1`, 这种情况下, 在 `trace` 函数里, 会进行这种调用:
-
-```python
-root_fn = forward
-# root_fn(x, y, z, d=1, e=2)  # OK
-root_fn = _patch_function(root_fn, 3)
-# 必须得用下面这种方式调用, 不能用原本的方式调用
-# root_fn(x, (y, z), {"d": 1, "e": 2})
-```
-
-参考如下资料理解:
-
-- [https://stackoverflow.com/questions/16064409/how-to-create-a-code-object-in-python](https://stackoverflow.com/questions/16064409/how-to-create-a-code-object-in-python)
-- [https://github.com/python/cpython/blob/3.8/Include/code.h](https://github.com/python/cpython/blob/3.8/Include/code.h)
-
-
-系统化地研究 Python AST: 主要涉及的内容包括 `ast`, `dis` 模块
+系统化地研究 Python AST 以及字节码相关的内容, 主要涉及的内容包括 `ast`, `dis` 模块, 以下是一些参考资料
 
 - python 官方文档: Language Reference?
 - [ast 模块官方文档](https://docs.python.org/3/library/dis.html)
 - [ast 详解文章](https://greentreesnakes.readthedocs.io/en/latest/index.html)
 
 其他:
-- [博客](https://towardsdatascience.com/understanding-python-bytecode-e7edaae8734d)
-- [博客](https://medium.com/@noransaber685/demystifying-python-bytecode-a-guide-to-understanding-and-analyzing-code-execution-6a163cb83bd1)
+- [https://towardsdatascience.com/understanding-python-bytecode-e7edaae8734d](https://towardsdatascience.com/understanding-python-bytecode-e7edaae8734d)
+- [https://medium.com/@noransaber685/demystifying-python-bytecode-a-guide-to-understanding-and-analyzing-code-execution-6a163cb83bd1](https://medium.com/@noransaber685/demystifying-python-bytecode-a-guide-to-understanding-and-analyzing-code-execution-6a163cb83bd1)
+- [https://stackoverflow.com/questions/16064409/how-to-create-a-code-object-in-python](https://stackoverflow.com/questions/16064409/how-to-create-a-code-object-in-python)
+- [https://github.com/python/cpython/blob/3.8/Include/code.h](https://github.com/python/cpython/blob/3.8/Include/code.h)
 
 **浅尝内置函数 `compile`, `dis.dis`, `fn.__code__` 的基本用法**
+
+示例代码 1:
 
 ```python
 import dis
@@ -550,9 +274,13 @@ def countdown(n):
         n -= 1
     print('Blastoff!')
 """
+# 这种用法在 GraphModule.recompile 方法中有用到:
+# 根据 graph 属性生成 python 代码, 然后由这份 python 代码编译出字节码, 最后由字节码及其他信息得到 forward 函数
 code = compile(code_string, "test", "exec")
 dis.dis(code)
 ```
+
+输出:
 
 ```
   2           0 LOAD_CONST               0 (<code object countdown at 0x7f8b55a74450, file "test", line 2>)
@@ -588,6 +316,8 @@ Disassembly of <code object countdown at 0x7f8b55a74450, file "test", line 2>:
              38 RETURN_VALUE
 ```
 
+示例代码 2:
+
 ```python
 import dis
 def countdown(n):
@@ -597,7 +327,6 @@ def countdown(n):
     print('Blastoff!')
 dis.dis(countdown)
 
-
 code_obj = countdown.__code__
 names = [name for name in code_obj.__dir__() if name.startswith("co_")]
 
@@ -606,6 +335,8 @@ for name in names:
     print(getattr(code_obj, name))
     print("-"*40)
 ```
+
+输出:
 
 ```
   2     >>    0 LOAD_FAST                0 (n)
@@ -631,9 +362,7 @@ for name in names:
              34 POP_TOP
              36 LOAD_CONST               0 (None)
              38 RETURN_VALUE
-```
 
-```
 co_argcount
 1
 ----------------------------------------
@@ -683,15 +412,40 @@ co_lnotab
 b'\x00\x01\x08\x01\n\x01\n\x01'
 ```
 
+**co_flag**
+
+注意到上例中 `co_flags` 为 `67`, 应该转为 2 进制进行理解, 参照[Python官方文档](https://docs.python.org/3/library/inspect.html#code-objects-bit-flags)和[CPython源码](https://github.com/python/cpython/blob/3.8/Include/code.h)
+
+```python
+import inspect
+
+# inspect.CO_OPTIMIZED:   1, 一般都为1
+# inspect.CO_NEWLOCALS:   2
+# inspect.CO_VARARGS:     4, 代表是否有可变参数 *args
+# inspect.CO_VARKEYWORDS: 8, 代表是否有可变参数 **kwargs
+# inspect.CO_NESTED:     16,
+# inspect.CO_GENERATOR   32,
+# inspect.CO_NOFREE      64, inspect 文档中没有记录, 可参考: https://github.com/python/cpython/blob/3.8/Include/code.h#L83
+# inspect.CO_COROUTINE   128,
+# inspect.CO_ITERABLE_COROUTINE 256,
+# inspect.CO_ASYNC_GENERATOR 512
+# ...
+
+bin(67)
+'0b1000011'
+```
+
 **co_code 与 dis.Bytecode 的关系**
 
-从下面的例子可以看出对应关系如下: **`co_code` 每两个字节代表一条指令, 其中第一个字节代表 opname, 第二个字节代表操作数 arg**, 全部的指令集为: `dis.opname`
+从下面的例子可以看出对应关系如下: **在 Python 3.7 版本之后, `co_code` 每两个字节代表一条指令, 其中第一个字节代表 opname, 第二个字节代表操作数 arg**, 全部的指令集为: `dis.opname`
 
 ```python
 import dis
 print(list(enumerate(dis.opname)))
 [(0, '<0>'), (1, 'POP_TOP'), (2, 'ROT_TWO'), (3, 'ROT_THREE'), (4, 'DUP_TOP'), (5, 'DUP_TOP_TWO'), (6, 'ROT_FOUR'), (7, '<7>'), ...]
 ```
+
+验证 `__code__.co_code` 与指令的一一对应关系:
 
 ```python
 print(countdown.__code__.co_code)
@@ -706,6 +460,8 @@ for i, x in enumerate(countdown.__code__.co_code):
     else:
         print(x, end="\n")
 ```
+
+输出:
 
 ```
 Instruction(opname='LOAD_FAST', opcode=124, arg=0, argval='n', argrepr='n', offset=0, starts_line=2, is_jump_target=True)
@@ -728,9 +484,7 @@ Instruction(opname='CALL_FUNCTION', opcode=131, arg=1, argval=1, argrepr='', off
 Instruction(opname='POP_TOP', opcode=1, arg=None, argval=None, argrepr='', offset=34, starts_line=None, is_jump_target=False)
 Instruction(opname='LOAD_CONST', opcode=100, arg=0, argval=None, argrepr='None', offset=36, starts_line=None, is_jump_target=False)
 Instruction(opname='RETURN_VALUE', opcode=83, arg=None, argval=None, argrepr='', offset=38, starts_line=None, is_jump_target=False)
-```
 
-```
 124	0
 100	1
 107	4
@@ -849,9 +603,9 @@ Modified bytecode:
 Result of modified function: 4
 ```
 
+### frame 对象
 
-
-**frame 对象**
+python (可能其他语言也类似) 在运行时, 函数的层层调用是一个压栈的过程, 而每一层都有一个上下文环境, 称为栈帧 (frame). Python 语言有着“自省”的特性, 主要是由 `inspect` 模块来提供这种功能, 在栈帧方面, 可以利用 `inspect` 模块的功能获取当前栈帧甚至于更底层的栈帧(即先入栈的那些, 也就是上层函数调用)的信息
 
 `help(type(inspect.currentframe()))` 的输出
 
@@ -903,13 +657,15 @@ class frame(object)
  |  f_trace_opcodes
 ```
 
-`f_back`: 指向调用栈中的上一帧。
-`f_code`: 当前执行帧所对应的代码对象。
-`f_locals`: 当前帧的局部变量字典。
-`f_globals`: 当前帧的全局变量字典。
-`f_lineno`: 当前执行的行号。
-`f_lasti`: 最后执行的指令在字节码中的索引。
-`f_builtins`: 当前帧的内置命名空间
+- `f_back`: 指向调用栈中的上一帧。
+- `f_code`: 当前执行帧所对应的代码对象(即 `__code__`)。
+- `f_locals`: 当前帧的局部变量字典。
+- `f_globals`: 当前帧的全局变量字典。
+- `f_lineno`: 当前执行的行号。
+- `f_lasti`: 最后执行的指令在字节码中的索引。
+- `f_builtins`: 当前帧的内置命名空间
+
+`__code__.co_name` 为 `'module'` 代表其是一个模块, `torch.fx.wrap` 中有涉及到这个检查
 
 ```python
 import inspect
@@ -917,12 +673,312 @@ import inspect
 def f():
     print(dir(inspect.currentframe()))
     print(inspect.currentframe().f_code.co_name)         # 'f'
-    # '<module>' 就是顶级帧了
+    # '<module>' 表示是顶级帧
     print(inspect.currentframe().f_back.f_code.co_name)  # '<module>'
     print(inspect.currentframe().f_back.f_back)  # None
 
 f()
 ```
+
+## 源码阅读 (torch=1.8)
+
+对于上一节的例子而言, 首先需要探索的便是: 
+
+```python
+from torch.fx import symbolic_trace
+graph_module: torch.fx.GraphModule = symbolic_trace(module)
+```
+
+而其实质上等同于
+
+```python
+import torch
+tracer = torch.fx.Tracer()
+graph: torch.fx.Graph = tracer.trace(module)      # 以下主要分析这一行
+graph_module = torch.fx.GraphModule(module, graph)
+```
+
+对 `Tracer.trace` 的深入研究实际上可以串其大半个 `torch.fx` 模块, 这里首先给出相应的代码目录:
+
+```
+torch/fx/
+  - _experimental/
+  - passes/
+  - __init__.py
+  - OVERVIEW.md
+  - graph_module.py       # 主要是 GraphModule 相关, Tracer.trace 不涉及, 放在后面研究
+  - graph.py
+  - immutable_collections.py
+  - interpreter.py        # Tracer.trace 不涉及, 放在后面研究
+  - node.py
+  - proxy.py
+  - subgraph_rewriter.py  # Tracer.trace 不涉及, 放在后面研究
+  - symbolic_trace.py     # Tracer 类, 分析入口
+```
+
+### `torch.fx.Tracer` 类概览
+
+首先 `torch.fx.symbolic_trace.Tracer` 继承自 `torch.fx.proxy.TracerBase`, 且在 `torch==1.8.0` 版本中, `TracerBase` 的子类仅有 `Tracer`, 并且对外的接口也都是 `Tracer` 提供的, 在分析 `Tracer.trace` 方法之前, 先看看 `Tracer.__init__` 及 `Tracer` 类的所有方法概览(初看只需粗略看即可, 以后可以回看这里的注释):
+
+```python
+# TracerBase 没有定义 __init__ 方法
+class Tracer(TracerBase):
+    def __init__(self, autowrap_modules : Tuple[ModuleType] = (math, )):
+        super().__init__()
+        self._autowrap_function_ids: Set[int] = {
+            id(value) for name, value in chain(*[m.__dict__.items() for m in autowrap_modules])
+            if not name.startswith("_") and callable(value)}
+        self._autowrap_search: List[ModuleType] = list(autowrap_modules)
+    
+    # 重点方法: 注意 TracerBase 也定义了 create_arg 方法, 后面将进一步分析
+    def create_arg(self, a: Any) -> "Argument": ...
+    
+    # 辅助方法: 用于 Tracer.call_module 方法中, 判断一个 m(args) 是否需要直接做成一个 Node, 而不用再深入内部细节, 这里的 m 是 torch.nn.Module 的子类
+    # 这里的实现是只要是用户自定义的继承自 torch.nn.Module 的子类, 就继续深入, 否则像 torch.nn.Conv2D, torch.nn.Linear 这类就不深入
+    # torch.fx 高阶: 用户可以通过定义 Tracer 的子类重写 is_leaf_module 来改变 trace 的行为, 例如把自定义的 MLP 类也作为叶子节点
+    def is_leaf_module(self, mod: torch.nn.Module, module_qualified_name: str):
+        return m.__module__.startswith('torch.nn') and not isinstance(m, torch.nn.Sequential)
+
+    # 辅助方法, 用于 call_module 中, 帮助判断是否为叶子节点
+    def path_of_module(self, mod) -> str: ...
+    
+    # 重点方法: 用于替换Module.forward方法
+    def call_module(self, m, forward, args, kwargs): ...
+    
+    # 重点方法: 用于构造 forward 函数的输入 Proxy
+    def create_args_for_root(self, root_fn, is_module, concrete_args=None): ...
+
+    def trace(self, root, concrete_args) -> Graph: ...
+
+    # ==================== 以下为继承自 TracerBase 的方法 =====================
+    # 重点方法: 既用于 create_proxy, 也用于 trace 方法的其他地方
+    def create_node(
+        self, kind: str, target, args: Tuple[Argument, ...], kwrags: Dict[str, Argument],
+        name: str = None, type_expr=None) -> Node: ...
+
+    # Proxy.__init__ 很简单, 仅仅是变量赋值
+    def proxy(self, node: Node):
+        return Proxy(node, self)
+    
+    # 重点方法: 内部会调用 create_node
+    def create_proxy(
+        self, kind: str, target, args: Tuple[Argument, ...], kwrags: Dict[str, Argument],
+        name: str = None, type_expr=None) -> Proxy: ...
+    
+    # 重点方法: 被 Tracer 重载
+    def create_arg(self, a: Any) -> Argument: ...
+
+    # 这两个直接报错, 因为无法判断一个 Proxy 对象的值, 也没法迭代(因为它已经是叶子节点了, 内部细节无法得知)
+    # 这也就是说 `for i in x` 以及 `if x` 这种代码无法被 torch.fx 所处理
+    def to_bool(self, obj: 'Proxy') -> bool: ...
+    def iter(self, obj: 'Proxy') -> Iterator: ...
+
+    # 暂不深究
+    def keys(self, obj: 'Proxy') -> Any: ...
+```
+
+我们主要先关注 `__init__` 方法, 实际上以目前的知识还无法知道在做什么(简版实现里也没有这些操作), 后面回过头来再讲, 因此我们现在应该直接看 `trace` 函数, 但这里先稍稍打乱一下阅读顺序, 先单独看看 `Proxy` 类, 对后面会事半功倍(当然, 如果像笔者一样直接读源码, 可能最开始不太能意识到这个阅读顺序)
+
+### `torch.fx.Proxy`
+
+
+### `torch.fx.Node`
+
+一个 Node 代表一个 op
+
+- `opcode`: string, 六者之一: `["placeholder", "get_attr", "call_function", "call_module", "call_method", "output"]`
+- `name`: string, 节点名称, 即 op 的输出, 在同一个 `Graph` 列, `Graph.nodes` 列表里节点名称各不相同.
+- `target`: string/callable, 即 op 本身, 对于 `"call_function"` 类型, `target` 是函数本身, 其余情况下均可用字符串代替
+- `args`: tuple[Uinon[Node, Any]], 位置参数, 元素有可能会是 `Node` 类型
+- `kwargs`: Dict[str, Union[Node, Any]], 关键字参数, 元素有可能会是 `Node` 类型
+
+`Node` 与 `Graph` 的关系如下:
+
+```python
+graph: Graph
+# graph 实际上包含一个 Node 链表(环状双向链表), 因此 graph 中只持有一个 root 节点 (Node 类型)
+# self._root = Node(self, '', 'root', '', (), {})
+graph.nodes: _node_list  # @property, _node_list 实质上也是一个类(命名方式没有按驼峰命名)
+
+node_list = list(graph.nodes)
+
+node = node_list[0]
+
+# node_list 实质上一个环状双向链表:
+# [x: Node, y: Node, output: Node, root: Node]
+# x._next = y,         x._prev = root
+# y._next = output,    y._prev = x
+# output._next = root, output._prev = y
+# root._next = x,      root._prev = output
+```
+
+`Node` 还包含几个属性:
+
+```python
+node._input_nodes   # Dict[Node, None]: _args, _kwargs 代表了计算得到此节点需要的输入, 而 _input_nodes 是 args 和 kwargs 中类型是 Node 的元素
+node._args          # tuple, 这里面也会包含 _input_nodes 中的节点
+node._kwargs        # dict
+
+node.users          # Dict[Node, None]: 代表此节点被用在后续哪些节点里
+node._prev
+node._next
+node._erased: bool  # iter(graph.nodes) 的返回结果不会保留 _erased 为 True 的节点
+```
+
+`Node` 有一个特殊的内部方法 `__update_args_kwargs`, 在初始化时会被调用以维护好 `_input_nodes`, `users` 属性
+
+```python
+class Node:
+    # 此函数仅在 self.args, self.kwargs 被赋值, 或者是 Node.__init__ 方法时才会被调用
+    # 实质上是在维护整个 graph 中每个节点的 _input_nodes, users 属性
+    def __update_args_kwargs(self, new_args : Tuple['Argument', ...], new_kwargs : Dict[str, 'Argument']):
+        self._args = new_args
+        self._kwargs = new_kwargs
+
+        for old_use in self._input_nodes.keys():
+            old_use.users.pop(self)
+
+        self._input_nodes = {}
+        # map_arg 的作用是: 递归检查 self._args 的每个元素, 如果是 Node 类型, 则执行函数
+        map_arg(self._args, lambda n: self._input_nodes.setdefault(n))
+        map_arg(self._kwargs, lambda n: self._input_nodes.setdefault(n))
+
+        for new_use in self._input_nodes.keys():
+            new_use.users.setdefault(self)
+```
+
+
+
+--------------------------------------
+## 源码阅读 (torch=2.0)
+
+`Node`:
+
+```python
+node.op: str  # "placeholder", "output", "call_function", "call_module", "call_method" 
+node.name: str
+node.target: Union[str, torch.Function, Any]
+node.args: List[Node]
+node.kwargs: Dict[str, Node]
+```
+
+`Proxy`: `F.relu` 这种函数可以作用在 `Proxy` 上, 原因是 `__torch_function__` 协议
+
+图转换手段
+
+```python
+# Note that this decomposition rule can be read as regular Python
+import torch.nn.functional as F
+def relu_decomposition(x):
+    return (x > 0) * x
+
+decomposition_rules = {}
+decomposition_rules[F.relu] = relu_decomposition
+
+def decompose(model: torch.nn.Module,
+              tracer_class : type = fx.Tracer) -> torch.nn.Module:
+    """
+    Decompose `model` into smaller constituent operations.
+    Currently,this only supports decomposing ReLU into its
+    mathematical definition: (x > 0) * x
+    """
+    graph : fx.Graph = tracer_class().trace(model)
+    new_graph = fx.Graph()
+    env = {}
+    tracer = torch.fx.proxy.GraphAppendingTracer(new_graph)
+    for node in graph.nodes:
+        if node.op == 'call_function' and node.target in decomposition_rules:
+            # By wrapping the arguments with proxies,
+            # we can dispatch to the appropriate
+            # decomposition rule and implicitly add it
+            # to the Graph by symbolically tracing it.
+            proxy_args = [
+                fx.Proxy(env[x.name], tracer) if isinstance(x, fx.Node) else x for x in node.args]
+            output_proxy = decomposition_rules[node.target](*proxy_args)
+
+            # Operations on `Proxy` always yield new `Proxy`s, and the
+            # return value of our decomposition rule is no exception.
+            # We need to extract the underlying `Node` from the `Proxy`
+            # to use it in subsequent iterations of this transform.
+            new_node = output_proxy.node
+            env[node.name] = new_node
+        else:
+            # Default case: we don't have a decomposition rule for this
+            # node, so just copy the node over into the new graph.
+            new_node = new_graph.node_copy(node, lambda x: env[x.name])
+            env[node.name] = new_node
+    return fx.GraphModule(model, new_graph)
+
+class M(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(3, 10)
+    def forward(self, x):
+        return torch.nn.functional.relu(self.linear(x))
+
+print(decompose(M()).code)
+```
+
+源码分析需要关注这些:
+
+- Proxy
+- Node
+- Graph
+- GraphModule
+- Tracer
+- Interpreter, Transformer
+
+
+`torch.fx._symbolic_proxy._patch_function`: 以下是简化后的核心实现 (`Python >= 3.8`)
+
+```python
+import inspect
+def _f(): pass
+FunctionType = type(_f)   # 即: types.FunctionType
+CodeType = type(_f.__code__)  # 即: types.CodeType
+HAS_VARSTUFF = inspect.CO_VARARGS | inspect.CO_VARKEYWORDS
+
+def _patch_function(fn: FunctionType, nargs: int) -> FunctionType:
+    co = fn.__code__
+    co_flags = co.co_flags & ~HAS_VARSTUFF
+    co_args: tuple
+    co_args = (
+        nargs,
+        0,
+        0,
+        co.co_nlocals,
+        co.co_stacksize,
+        co_flags,
+        co.co_code,
+        co.co_consts,
+        co.co_names,
+        co.co_varnames,
+        co.co_filename,
+        co.co_name,
+        co.co_firstlineno,
+        co.co_lnotab,
+        co.co_freevars,
+        co.co_cellvars,
+    )
+    new_code = CodeType(*co_args)  # type: ignore[arg-type]
+    return FunctionType(
+        new_code, fn.__globals__, fn.__name__, fn.__defaults__, fn.__closure__
+    )
+    # we need to insert placeholder nodes for *args and **kwargs
+    # we can't call this function normally, otherwise it would try to unpack them
+    # instead, let's make python think that args and kwargs are normal variables
+```
+
+怎么理解最后的三行注释: 注意这里的实参即为被 trace 的函数, 即 `nn.Module.forward`, 有时候这个函数会包含一些可变参数: `args` 与 `kwargs`. 这种情况下, 原本的 `forward` 函数签名假设是 `forward(self, x, *args, **kwargs)`, 那么原本的 `forward` 函数的 `__code__.co_argcount=1`, 这种情况下, 在 `trace` 函数里, 会进行这种调用:
+
+```python
+root_fn = forward
+# root_fn(x, y, z, d=1, e=2)  # OK
+root_fn = _patch_function(root_fn, 3)
+# 必须得用下面这种方式调用, 不能用原本的方式调用
+# root_fn(x, (y, z), {"d": 1, "e": 2})
+```
+
 
 
 **`Tracer().trace()` 的总体逻辑**
