@@ -72,7 +72,9 @@ m: torch.fx.GraphModule = transform(M())
 
 ## 实现原理概览及 minimal `torch.fx`
 
-TODO
+TODO: `Graph.python_code` 的实现尚不完善, 整体代码行数也稍多(目前200多行, 最好能减到200行), 有些地方还需优化
+
+[https://github.com/BuxianChen/snippet/blob/master/fx/simple_fx.py](https://github.com/BuxianChen/snippet/blob/master/fx/simple_fx.py)
 
 ## 源码阅读预备知识
 
@@ -680,6 +682,30 @@ def f():
 f()
 ```
 
+利用 frame 笔者在阅读源码时用到了一些调试技巧以获取当前函数范围外的变量:
+
+```python
+# 调试断点加在 torch.fx._symbolic_trace.py:Tracer.create_args_for_root 函数刚结束时, 笔者想研究 fn 究竟变成了什么
+import inspect
+caller_frame = inspect.currentframe().f_back
+frame = caller_frame
+# inspect.stack()[-9].filename
+for i in range(13):
+    frame=frame.f_back
+mymodule = frame.f_globals["mymodule"]
+```
+
+另一个小技巧:
+
+```python
+x = [1, 2]
+def foo():
+    pass
+
+foo.__globals__['x'] = 3
+print(x)   # 3
+```
+
 ## 源码阅读 (torch=1.8)
 
 对于上一节的例子而言, 首先需要探索的便是: 
@@ -781,16 +807,137 @@ class Tracer(TracerBase):
 
 ### `torch.fx.Proxy`
 
+Proxy 代理的算子
+
+- 魔术方法: 例如 `a + b`, 这里 `a` 和 `b` 原本是 `Tensor` 类型, 经过替换后都是 `Proxy` 类型, 因此在 trace 时由 `Proxy.__add__` 等魔术方法实现, 建立 `call_function` 节点
+- `torch.add`: `Proxy.__torch_function__` 实现, 建立 `call_function` 节点 
+- `Tensor.add`: `Proxy.__torch_function__` 实现, 建立 `call_method` 节点
+
+再加上
+
+- `Module(...)`: 在 trace 之前, 首先会把 `Module` 的 `__call__` 做全局替换, 因此这类 `out=self.layer_1(out)` 这种代码会进入被替换的函数, 建立 `call_module` 节点
+- `Module.attrname`: 在 trace 之前, 首先会把 `Module` 的 `__getattr__` 做全局替换, 因此这类 `self.layer_1` 这种代码会进入被替换的函数, 建立 `get_attr` 节点
+- 输入参数的替换: 建立 `placeholder` 节点
+- 输出结果在 trace 函数中手动建立 `output` 节点
+
+自定义的追踪函数
+
+```python
+# 全局变量
+_wrapped_fns_to_patch : List[Tuple[dict, str]]
+_wrapped_methods_to_patch : List[Tuple[type, str]]
+# 实例变量: autowrap_functions, param_shapes_constant 是 torch==1.8.0 没有的
+Tracer.__init__(self, autowrap_modules, autowrap_functions, param_shapes_constant=False)
+```
+
+以上便是所有的 node 类型和可追踪的数据操作的全集, 对于不属于上述类型的操作, 则直接进行运算得到结果
+
+tracer 的局限性:
+
+**分支条件直接报错**
+
+```python
+if x.sum() > 0:  # 为 x.sum() 以及 {} > 0 建立节点, 然后执行 proxy.__bool__ 时会引发错误(Proxy.__bool__函数报错)
+    x = -x
+```
+
+**外部函数调用不能正确追踪**
+
+```python
+a = torch.tensor(np.random.random(2, 2))  # 这里先对np.random.random直接执行得到结果, 随后直接执行 torch.tensor 得到结果, 这两步都不建立 node
+x = x * a  # 检查到 a 不在被 trace 的 model 的属性里, 先执行 setattr(model, "_tensor_constant0", a), 然后为他建立一个 Proxy, 最后执行 x*a 时建立一个node
+# z = x * x  # 此时x变量被绑定到了上述返回的node里, 所以这里继续执行 Proxy * Proxy 的操作
+```
+
+**动态 shape: 不确定, TODO**
+
+TODO: 根本原因应该也是 Proxy 不能做实际运算: Proxy.shape 仍然是 Proxy 的操作
+
+怎么适当解开上述局限性(Tracer高级特性): TODO
+
+
+单元测试代码
+
+```python
+from torch.fx import Proxy, Tracer, Graph
+tracer = Tracer()
+tracer.graph = Graph()
+proxy = tracer.create_proxy('placeholder', "x", (), {},)
+
+proxy + 1                 # call_function
+proxy.add(1)              # call_method
+torch.add(proxy, 2)       # call_function
+print([node.op for node in list(tracer.graph.nodes)])
+```
+
+`Proxy` 类的源码阅读需要注意如下动态的部分 (注意以下是 `torch==1.8.0` 的代码): 简单来说, 就是为 `Proxy` 追加了 `__add__`, `__radd__` 这类魔术方法.
+
+```python
+class Proxy:
+    ...
+
+reflectable_magic_methods = {
+    'add': '{} + {}',
+    'sub': '{} - {}',
+    'mul': '{} * {}',
+    'floordiv': '{} // {}',
+    'truediv': '{} / {}',
+    'div': '{} / {}',
+    'mod': '{} % {}',
+    'pow': '{} ** {}',
+    'lshift': '{} << {}',
+    'rshift': '{} >> {}',
+    'and': '{} & {}',
+    'or': '{} | {}',
+    'xor': '{} ^ {}',
+    'getitem': '{}[{}]'
+}
+
+magic_methods = dict({
+    'eq': '{} == {}',
+    'ne': '{} != {}',
+    'lt': '{} < {}',
+    'gt': '{} > {}',
+    'le': '{} <= {}',
+    'ge': '{} >= {}',
+    'pos': '+{}',
+    'neg': '-{}',
+    'invert': '~{}'}, **reflectable_magic_methods)
+
+for method in magic_methods:
+    def scope(method):
+        def impl(*args, **kwargs):
+            tracer = args[0].tracer
+            target = getattr(operator, method)
+            return tracer.create_proxy('call_function', target, args, kwargs)
+        impl.__name__ = method
+        as_magic = f'__{method}__'
+        setattr(Proxy, as_magic, impl)
+    scope(method)
+
+def _define_reflectable(orig_method_name):
+    method_name = f'__r{orig_method_name}__'
+
+    def impl(self, rhs):
+        target = getattr(operator, orig_method_name)
+        return self.tracer.create_proxy('call_function', target, (rhs, self), {})
+    impl.__name__ = method_name
+    impl.__qualname__ = method_name
+    setattr(Proxy, method_name, impl)
+
+for orig_method_name in reflectable_magic_methods:
+    _define_reflectable(orig_method_name)
+```
 
 ### `torch.fx.Node`
 
 一个 Node 代表一个 op
 
-- `opcode`: string, 六者之一: `["placeholder", "get_attr", "call_function", "call_module", "call_method", "output"]`
+- `opcode`: string, 六者之一: `["placeholder", "get_attr", "call_function", "call_module", "call_method", "output"]`. 严格地说其实还有一个特殊类型, 仅在内部使用: `Graph.root` 节点的 `opcode=''`.
 - `name`: string, 节点名称, 即 op 的输出, 在同一个 `Graph` 列, `Graph.nodes` 列表里节点名称各不相同.
-- `target`: string/callable, 即 op 本身, 对于 `"call_function"` 类型, `target` 是函数本身, 其余情况下均可用字符串代替
-- `args`: tuple[Uinon[Node, Any]], 位置参数, 元素有可能会是 `Node` 类型
-- `kwargs`: Dict[str, Union[Node, Any]], 关键字参数, 元素有可能会是 `Node` 类型
+- `target`: string/callable, 即 op 本身, 对于 `"call_function"` 类型, `target` 是函数本身, 其余类型情况下均为字符串, 这一点的源码验证: 在源码中可以在 `torch.fx.Graph.python_code` 方法中的内部函数 `emit_node` 里各种情况的 `assert` 语句可以得到验证; 或者在 `Tracer.trace` 函数中各处的对 `create_proxy` 调用的实参也可以得到验证
+- `args`: tuple[Union[Node, Any]], 位置参数, 元素有可能会是 `Node` 类型或者是“字面量类型” (例如整数等, 代码里对应的是`torch.fx.node.base_types`, 用于 `TracerBase.create_arg` 方法里)
+- `kwargs`: Dict[str, Union[Node, Any]], 关键字参数, 元素有可能会是 `Node` 类型或者是“字面量类型”
 
 `Node` 与 `Graph` 的关系如下:
 
@@ -847,6 +994,130 @@ class Node:
             new_use.users.setdefault(self)
 ```
 
+### `Tracer.trace`
+
+
+调用栈(TODO, 替换为源码)
+
+```
+trace:
+
+collect_tensor_attrs(...)  # 不知道用在哪, 注释说用在 create_arg
+fn_globals = fn.__globals__
+self.create_args_for_root
+    TracerBase.create_proxy('placeholder', name, default, {})
+        Tracer.create_arg -> super().create_arg
+        TracerBase.create_node: 完全是 self.graph.create_node
+        TracerBase.proxy: Proxy(node, self)
+    也许使用底层API创建函数修改被追踪的函数签名(仅适用于有可变参数的情形)
+with _Patcher() as patcher:
+    patcher.patch_method(Module.__getattr__)
+    patcher.patch_method(Module.__call__)
+    # 对全局变量 _wrapped_fns_to_patch, _wrapped_methods_to_patch分别进行patch和patch_method, 这里buildin的用法待研究
+    _patch_wrapped_functions(patcher)
+
+    
+    
+    # 
+    _autowrap_check(patcher, fn_globals, self._autowrap_function_ids)
+
+    # self._autowrap_search 实际上就是 Tracer 的默认实例化参数 autowrap_modules , 一般就只是包含 math
+    for module in self._autowrap_search:
+        _autowrap_check(patcher, module.__dict__, self._autowrap_function_ids)
+
+    self.create_node('output', 'output', (self.create_arg(fn(*args)),), {},
+                        type_expr=fn.__annotations__.get('return', None))
+```
+
+
+```python
+# Node 类型则应用函数, 否则不应用
+def map_arg(a: Argument, fn: Callable[[Node], Argument]) -> Argument:
+    return map_aggregate(a, lambda x: fn(x) if isinstance(x, Node) else x)
+
+
+# map_arg 函数使用了 map_aggregate 函数, 其进一步使用到了一些高级技巧: 使用 type 构建不可变列表及不可变字典, 实现如下:
+def _no_mutation(self, *args, **kwargs):
+    raise NotImplementedError(f"'{type(self).__name__}' object does not support mutation. {_help_mutation}")
+
+def _create_immutable_container(base, mutable_functions):
+    container = type('immutable_' + base.__name__, (base,), {})
+    for attr in mutable_functions:
+        setattr(container, attr, _no_mutation)
+    return container
+
+immutable_list = _create_immutable_container(list,
+    ['__delitem__', '__iadd__', '__imul__', '__setitem__', 'append', 'clear', 'extend', 'insert', 'pop', 'remove'])
+# __reduce__ 与 pickle 模块相关, 相关的魔术方法还有 __reduce_ex__, __getstate__, __setstate__
+immutable_list.__reduce__ = lambda self: (immutable_list, (tuple(iter(self)),))
+immutable_dict = _create_immutable_container(dict, ['__delitem__', '__setitem__', 'clear', 'pop', 'popitem', 'update'])
+immutable_dict.__reduce__ = lambda self: (immutable_dict, (iter(self.items()),))
+
+```
+
+`collect_tensor_attrs`: 这个有些奇特, 似乎只捕获到"悬挂"的tensor或者子模型(位于 `_modules` 中)的"悬挂"tensor, 不确定在后续的作用
+
+```python
+class N(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(3, 3)
+        self.relu = torch.nn.ReLU()
+        self.a = torch.rand(2)
+        # N().__dict__["b"]: KeyError       # N().b: OK
+        self.b = torch.nn.Parameter(torch.rand(1))  # 不会被捕获, 因为它会被自动放入 _parameters 中, 而不会是 __dict__["b"]
+    def forward(self, x):
+        pass
+
+class M(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        # torch.nn.ModuleList 最终会落到 Module.add_module, 其本质是对 self._modules 进行添加
+        self.blocks = torch.nn.ModuleList([N() for i in range(3)])  # 这里面的 N().a 会被捕获
+        self.blocks_list = [N() for i in range(2)]                  # 这里面的 N().a 不会被捕获
+        self.layer = N()
+    def forward(self, x):
+        pass
+
+from typing import List
+from torch._C import ScriptObject
+
+tensor_attrs = {}
+def collect_tensor_attrs(m : torch.nn.Module, prefix_atoms : List[str]):
+    for k, v in m.__dict__.items():
+        if isinstance(v, (torch.Tensor, ScriptObject)):
+            tensor_attrs[v] = '.'.join(prefix_atoms + [k])
+    for k, v in m.named_children():
+        collect_tensor_attrs(v, prefix_atoms + [k])
+
+collect_tensor_attrs(M(), [])
+print(tensor_attrs)
+"""
+{tensor([0.9359, 0.2638]): 'blocks.0.a',
+ tensor([0.1203, 0.3830]): 'blocks.1.a',
+ tensor([0.1230, 0.9907]): 'blocks.2.a',
+ tensor([0.7182, 0.1366]): 'layer.a'}
+"""
+print(N().__dict__)
+"""
+{'training': True,
+ '_parameters': OrderedDict([('b', Parameter containing:
+               tensor([0.0683], requires_grad=True))]),
+ '_buffers': OrderedDict(),
+ '_non_persistent_buffers_set': set(),
+ '_backward_hooks': OrderedDict(),
+ '_is_full_backward_hook': None,
+ '_forward_hooks': OrderedDict(),
+ '_forward_pre_hooks': OrderedDict(),
+ '_state_dict_hooks': OrderedDict(),
+ '_load_state_dict_pre_hooks': OrderedDict(),
+ '_load_state_dict_post_hooks': OrderedDict(),
+ '_modules': OrderedDict([('linear',
+               Linear(in_features=3, out_features=3, bias=True)),
+              ('relu', ReLU())]),
+ 'a': tensor([0.6327, 0.7129])}
+"""
+```
 
 
 --------------------------------------
@@ -861,8 +1132,6 @@ node.target: Union[str, torch.Function, Any]
 node.args: List[Node]
 node.kwargs: Dict[str, Node]
 ```
-
-`Proxy`: `F.relu` 这种函数可以作用在 `Proxy` 上, 原因是 `__torch_function__` 协议
 
 图转换手段
 
@@ -980,7 +1249,6 @@ root_fn = _patch_function(root_fn, 3)
 ```
 
 
-
 **`Tracer().trace()` 的总体逻辑**
 
 
@@ -1028,34 +1296,6 @@ print(mymodule(my_x, my_y, *my_args, **my_kwargs))
 symbolic_traced: torch.fx.GraphModule = symbolic_trace(mymodule, concrete_args={"x": my_x})
 ```
 
-一些调试技巧(获取当前函数范围外的变量):
-
-```python
-# 加在 torch.fx._symbolic_trace.py:Tracer.create_args_for_root 函数内
-import inspect
-caller_frame = inspect.currentframe().f_back
-frame = caller_frame
-# inspect.stack()[-9].filename
-for i in range(13):
-    frame=frame.f_back
-mymodule = frame.f_globals["mymodule"]
-```
-
-源码分析
-
-分析目标是: 
-
-```python
-symbolic_trace(module: torch.nn.Module)
-```
-
-也就是:
-
-```python
-tracer = torch.fx.Tracer()
-graph: Graph = tracer.trace(module: torch.nn.Module)
-gm = torch.fx.GraphModule(module, graph)
-```
 
 
 首先分析一些辅助函数:
@@ -1336,266 +1576,4 @@ def trace(self, root, concrete_args):
 
     self.submodule_paths = None
     return self.graph
-```
-
-**Proxy**
-
-Proxy 代理的算子
-
-- 魔术方法: 例如 `a + b`, 这里 `a` 和 `b` 原本是 `Tensor` 类型, 经过替换后都是 `Proxy` 类型, 因此在 trace 时由 `Proxy.__add__` 等魔术方法实现, 建立 `call_function` 节点
-- `torch.add`: `Proxy.__torch_function__` 实现, 建立 `call_function` 节点 
-- `Tensor.add`: `Proxy.__torch_function__` 实现, 建立 `call_method` 节点
-
-再加上
-
-- `Module(...)`: 在 trace 之前, 首先会把 `Module` 的 `__call__` 做全局替换, 因此这类 `out=self.layer_1(out)` 这种代码会进入被替换的函数, 建立 `call_module` 节点
-- `Module.attrname`: 在 trace 之前, 首先会把 `Module` 的 `__getattr__` 做全局替换, 因此这类 `self.layer_1` 这种代码会进入被替换的函数, 建立 `get_attr` 节点
-- 输入参数的替换: 建立 `placeholder` 节点
-- 输出结果在 trace 函数中手动建立 `output` 节点
-
-自定义的追踪函数
-
-```python
-# 全局变量
-_wrapped_fns_to_patch : List[Tuple[dict, str]]
-_wrapped_methods_to_patch : List[Tuple[type, str]]
-# 实例变量: autowrap_functions, param_shapes_constant 是 torch==1.8.0 没有的
-Tracer.__init__(self, autowrap_modules, autowrap_functions, param_shapes_constant=False)
-```
-
-以上便是所有的 node 类型和可追踪的数据操作的全集, 对于不属于上述类型的操作, 则直接进行运算得到结果
-
-tracer 的局限性:
-
-分支条件直接报错
-
-```python
-if x.sum() > 0:  # 为 x.sum() 以及 {} > 0 建立节点, 然后执行 proxy.__bool__ 时会引发错误(Proxy.__bool__函数报错)
-    x = -x
-```
-
-外部函数调用不能正确追踪
-
-```python
-a = torch.tensor(np.random.random(2, 2))  # 这里先对np.random.random直接执行得到结果, 随后直接执行 torch.tensor 得到结果, 这两步都不建立 node
-x = x * a  # 检查到 a 不在被 trace 的 model 的属性里, 先执行 setattr(model, "_tensor_constant0", a), 然后为他建立一个 Proxy, 最后执行 x*a 时建立一个node
-# z = x * x  # 此时x变量被绑定到了上述返回的node里, 所以这里继续执行 Proxy * Proxy 的操作
-```
-
-动态 shape: TODO, 根本原因应该也是 Proxy 不能做实际运算: Proxy.shape 仍然是 Proxy 的操作
-
-怎么适当解开上述局限性(Tracer高级特性): TODO
-
-
-单元测试代码
-
-```python
-from torch.fx import Proxy, Tracer, Graph
-tracer = Tracer()
-tracer.graph = Graph()
-proxy = tracer.create_proxy('placeholder', "x", (), {},)
-
-proxy + 1                 # call_function
-proxy.add(1)              # call_method
-torch.add(proxy, 2)       # call_function
-print([node.op for node in list(tracer.graph.nodes)])
-```
-
-完整的模型(一个包含各种操作的实际的Module): TODO
-
-
-小技巧:
-
-```python
-x = [1, 2]
-def foo():
-    pass
-
-foo.__globals__['x'] = 3
-print(x)   # 3
-```
-
-以下为 pytorch 1.8 里的源码, 供参考:
-
-```python
-# Node 类型则应用函数, 否则不应用
-def map_arg(a: Argument, fn: Callable[[Node], Argument]) -> Argument:
-    return map_aggregate(a, lambda x: fn(x) if isinstance(x, Node) else x)
-
-
-# map_arg 函数使用了 map_aggregate 函数, 其进一步使用到了一些高级技巧: 使用 type 构建不可变列表及不可变字典, 实现如下:
-def _no_mutation(self, *args, **kwargs):
-    raise NotImplementedError(f"'{type(self).__name__}' object does not support mutation. {_help_mutation}")
-
-def _create_immutable_container(base, mutable_functions):
-    container = type('immutable_' + base.__name__, (base,), {})
-    for attr in mutable_functions:
-        setattr(container, attr, _no_mutation)
-    return container
-
-immutable_list = _create_immutable_container(list,
-    ['__delitem__', '__iadd__', '__imul__', '__setitem__', 'append', 'clear', 'extend', 'insert', 'pop', 'remove'])
-# __reduce__ 与 pickle 模块相关, 相关的魔术方法还有 __reduce_ex__, __getstate__, __setstate__
-immutable_list.__reduce__ = lambda self: (immutable_list, (tuple(iter(self)),))
-immutable_dict = _create_immutable_container(dict, ['__delitem__', '__setitem__', 'clear', 'pop', 'popitem', 'update'])
-immutable_dict.__reduce__ = lambda self: (immutable_dict, (iter(self.items()),))
-
-```
-
-`collect_tensor_attrs`: 这个有些奇特, 似乎只捕获到"悬挂"的tensor或者子模型(位于 `_modules` 中)的"悬挂"tensor, 不确定在后续的作用
-
-```python
-class N(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.linear = torch.nn.Linear(3, 3)
-        self.relu = torch.nn.ReLU()
-        self.a = torch.rand(2)
-        # N().__dict__["b"]: KeyError       # N().b: OK
-        self.b = torch.nn.Parameter(torch.rand(1))  # 不会被捕获, 因为它会被自动放入 _parameters 中, 而不会是 __dict__["b"]
-    def forward(self, x):
-        pass
-
-class M(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        # torch.nn.ModuleList 最终会落到 Module.add_module, 其本质是对 self._modules 进行添加
-        self.blocks = torch.nn.ModuleList([N() for i in range(3)])  # 这里面的 N().a 会被捕获
-        self.blocks_list = [N() for i in range(2)]                  # 这里面的 N().a 不会被捕获
-        self.layer = N()
-    def forward(self, x):
-        pass
-
-from typing import List
-from torch._C import ScriptObject
-
-tensor_attrs = {}
-def collect_tensor_attrs(m : torch.nn.Module, prefix_atoms : List[str]):
-    for k, v in m.__dict__.items():
-        if isinstance(v, (torch.Tensor, ScriptObject)):
-            tensor_attrs[v] = '.'.join(prefix_atoms + [k])
-    for k, v in m.named_children():
-        collect_tensor_attrs(v, prefix_atoms + [k])
-
-collect_tensor_attrs(M(), [])
-print(tensor_attrs)
-"""
-{tensor([0.9359, 0.2638]): 'blocks.0.a',
- tensor([0.1203, 0.3830]): 'blocks.1.a',
- tensor([0.1230, 0.9907]): 'blocks.2.a',
- tensor([0.7182, 0.1366]): 'layer.a'}
-"""
-print(N().__dict__)
-"""
-{'training': True,
- '_parameters': OrderedDict([('b', Parameter containing:
-               tensor([0.0683], requires_grad=True))]),
- '_buffers': OrderedDict(),
- '_non_persistent_buffers_set': set(),
- '_backward_hooks': OrderedDict(),
- '_is_full_backward_hook': None,
- '_forward_hooks': OrderedDict(),
- '_forward_pre_hooks': OrderedDict(),
- '_state_dict_hooks': OrderedDict(),
- '_load_state_dict_pre_hooks': OrderedDict(),
- '_load_state_dict_post_hooks': OrderedDict(),
- '_modules': OrderedDict([('linear',
-               Linear(in_features=3, out_features=3, bias=True)),
-              ('relu', ReLU())]),
- 'a': tensor([0.6327, 0.7129])}
-"""
-```
-
-`Proxy` 类的源码阅读需要注意如下动态的部分 (注意以下是 `torch==1.8.0` 的代码): 简单来说, 就是为 `Proxy` 追加了 `__add__`, `__radd__` 这类魔术方法.
-
-```python
-class Proxy:
-    ...
-
-reflectable_magic_methods = {
-    'add': '{} + {}',
-    'sub': '{} - {}',
-    'mul': '{} * {}',
-    'floordiv': '{} // {}',
-    'truediv': '{} / {}',
-    'div': '{} / {}',
-    'mod': '{} % {}',
-    'pow': '{} ** {}',
-    'lshift': '{} << {}',
-    'rshift': '{} >> {}',
-    'and': '{} & {}',
-    'or': '{} | {}',
-    'xor': '{} ^ {}',
-    'getitem': '{}[{}]'
-}
-
-magic_methods = dict({
-    'eq': '{} == {}',
-    'ne': '{} != {}',
-    'lt': '{} < {}',
-    'gt': '{} > {}',
-    'le': '{} <= {}',
-    'ge': '{} >= {}',
-    'pos': '+{}',
-    'neg': '-{}',
-    'invert': '~{}'}, **reflectable_magic_methods)
-
-for method in magic_methods:
-    def scope(method):
-        def impl(*args, **kwargs):
-            tracer = args[0].tracer
-            target = getattr(operator, method)
-            return tracer.create_proxy('call_function', target, args, kwargs)
-        impl.__name__ = method
-        as_magic = f'__{method}__'
-        setattr(Proxy, as_magic, impl)
-    scope(method)
-
-def _define_reflectable(orig_method_name):
-    method_name = f'__r{orig_method_name}__'
-
-    def impl(self, rhs):
-        target = getattr(operator, orig_method_name)
-        return self.tracer.create_proxy('call_function', target, (rhs, self), {})
-    impl.__name__ = method_name
-    impl.__qualname__ = method_name
-    setattr(Proxy, method_name, impl)
-
-for orig_method_name in reflectable_magic_methods:
-    _define_reflectable(orig_method_name)
-```
-
-
-
-
-调用栈
-
-```
-trace:
-
-collect_tensor_attrs(...)  # 不知道用在哪, 注释说用在 create_arg
-fn_globals = fn.__globals__
-self.create_args_for_root
-    TracerBase.create_proxy('placeholder', name, default, {})
-        Tracer.create_arg -> super().create_arg
-        TracerBase.create_node: 完全是 self.graph.create_node
-        TracerBase.proxy: Proxy(node, self)
-    也许使用底层API创建函数修改被追踪的函数签名(仅适用于有可变参数的情形)
-with _Patcher() as patcher:
-    patcher.patch_method(Module.__getattr__)
-    patcher.patch_method(Module.__call__)
-    # 对全局变量 _wrapped_fns_to_patch, _wrapped_methods_to_patch分别进行patch和patch_method, 这里buildin的用法待研究
-    _patch_wrapped_functions(patcher)
-    
-    
-    # 
-    _autowrap_check(patcher, fn_globals, self._autowrap_function_ids)
-
-    # self._autowrap_search 实际上就是 Tracer 的默认实例化参数 autowrap_modules , 一般就只是包含 math
-    for module in self._autowrap_search:
-        _autowrap_check(patcher, module.__dict__, self._autowrap_function_ids)
-
-    self.create_node('output', 'output', (self.create_arg(fn(*args)),), {},
-                        type_expr=fn.__annotations__.get('return', None))
-
 ```
