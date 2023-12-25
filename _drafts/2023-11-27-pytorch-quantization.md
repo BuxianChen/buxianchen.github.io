@@ -6,8 +6,10 @@ date: 2023-11-27 11:10:04 +0800
 
 参考资料:
 
-- [https://pytorch.org/docs/stable/quantization.html](https://pytorch.org/docs/stable/quantization.html)
-- [https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization)
+- 官方文档: [https://pytorch.org/docs/2.1/quantization.html](https://pytorch.org/docs/2.1/quantization.html)
+- 官方API文档: [https://pytorch.org/docs/2.1/quantization-support.html](https://pytorch.org/docs/2.1/quantization-support.html)
+- 官方tutorial搜索: [https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default](https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default)
+- Huggingface Optimum 的一篇概念介绍: [https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization)
 
 相关内容:
 

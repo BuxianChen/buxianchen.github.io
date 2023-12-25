@@ -16,7 +16,7 @@ labels: [pytorch]
 
 **torch.fx 应用例子**
 
-- [pytorch Conv+BN fuse](https://github.com/pytorch/pytorch/blob/main/torch/fx/experimental/optimization.py#L50)
+- [pytorch Conv+BN fuse](https://github.com/pytorch/pytorch/blob/v2.0.0/torch/fx/experimental/optimization.py#L50)
 - [fx graph mode quantization](https://pytorch.org/docs/master/quantization.html#prototype-fx-graph-mode-quantization)
 - [huggingface optimum](https://huggingface.co/docs/optimum/main/en/torch_fx/usage_guides/optimization): 但似乎没有具体的用例
 
@@ -24,15 +24,15 @@ labels: [pytorch]
 
 AI 编译器的目标是希望把现成的模型提升运行速度或吞吐量, 以笔者目前拙见一般有几种方式:
 
-- 方式1: 将原始用 pytorch 写的 python 代码完全"重写".
-- 方式2: 将原始用 pytorch 写的 python 代码适当改写(改写后仍然是 Python 代码), 使得编译器能直接处理改写后的代码. 因此, 做 AI 编译器的人总是希望能尽量少地该原始代码, 或者说尽量扩大编译器能处理的东西.
+- 方式 1: 将原始用 pytorch 写的 python 代码完全"重写".
+- 方式 2: 将原始用 pytorch 写的 python 代码适当改写或者写法上做一定的约束, 使得 AI 编译器能直接处理这类代码. 因此, 做 AI 编译器的人总是希望能尽量少地修改原始代码, 或者说尽量扩大编译器能处理的东西.
 
 由于 pytorch 是 python 优先的, 为了做AI模型的静态加速, 首先是将"杂乱无章"的 python 代码转换为结构化的计算图(中间表示), 这一过程也就是所谓的"计算图捕获", 然后再执行相应的编译过程. 至今为止, pytorch 自身在这方面做了 `torch.jit` (pytorch1.0), `torch.fx`(pytorch1.8), `torch.compiler`(pytorch2.0) 的探索.
 
-`torch.fx` 模块的主要用途是使用一种方式 (`torch.fx.Tracer`, 不同于 `torchscript`) 分析源代码, 得到中间表示 `torch.fx.Graph`, 然后程序员可以修改这个中间表示, 最后重新转换回转换后的 python 代码. 也就是说可以完成这个 pipeline: `symbolic tracing -> intermediate representation -> transforms -> Python code generation`, 作用如下:
+`torch.fx` 模块的主要用途是使用一种方式 (`torch.fx.Tracer`, 不同于 `torchscript`) 分析源代码, 得到中间表示 `torch.fx.Graph`, 然后程序员可以修改这个中间表示, 最后重新转换回 python 代码. 也就是说可以完成这个 pipeline: `symbolic tracing -> intermediate representation -> transforms -> Python code generation`, 更重要的是, 各个模块实际上都可以独自使用:
 
-- 假设现在有很多包含 `nn.Module` 的代码(例如像 huggingface transformers, timm, mmdetection 这种代码库), 现在希望对这些代码做统一的转换, 则可以走上面的完整 pipeline 来达到目的
-- 可以直接写一个中间表示的配置文件, 然后直接从配置文件转换为 python 代码
+- 假设现在手上继承自 `nn.Module` 的类 (例如像 huggingface transformers, timm, mmdetection 这种代码库), 现在希望对这些代码做统一的转换, 则可以走上面的完整 pipeline 来达到目的
+- 可以写一个中间表示的配置文件, 然后利用配置文件得到 python 代码
 
 总的来说, 就是可以用比较 hack 的方式修改模型, 下面是一个例子:
 
@@ -66,7 +66,7 @@ m: torch.fx.GraphModule = transform(M())
 本篇博客的写作目的如下:
 
 - 笔者最初只是好奇 torch 的量化算法, 其文档中提到了一种自动的用法, 其基于 `torch.fx`, 因此笔者转而研究 `torch.fx`
-- 仅仅出于好奇, `torch.fx` 是怎么捕获计算图的
+- 笔者好奇于 `torch.fx` 是怎么捕获计算图的
 - 笔者 `torch.fx` 的官方文档时, 还是感到很多地方无法理解, 因此可能需要源码理解
 - `torch.fx` 的局限性有哪些, 哪些可以通过它的高级特性突破这些局限性, 因此也不得不研究源码
 
@@ -78,9 +78,11 @@ TODO: `Graph.python_code` 的实现尚不完善, 整体代码行数也稍多(目
 
 ## 源码阅读预备知识
 
-### `__torch_function__` 协议: TODO
+### `__torch_function__` 协议
 
-此协议大致如下: 当调用 `torch.max`, `torch.nn.functional.softmax` 时, 会优先根据输入参数检查是否带有 `__torch_function__`, 如果带有则会优先将实参进行适当的"转换", 触发对 `__torch_function__` 的调用.
+参考 Pytorch Notes: [https://pytorch.org/docs/1.8.0/notes/extending.html#extending-torch](https://pytorch.org/docs/1.8.0/notes/extending.html#extending-torch)
+
+此协议大致如下: 当调用 `torch.max`, `torch.nn.functional.softmax` 时, 会优先根据输入参数检查是否带有 `__torch_function__`, 如果带有则会优先触发对 `__torch_function__` 的调用.
 
 `torch.nn.functional.softmax` 源码(`torch==1.8.0`)如下, 以供参考 (`torch.max` 似乎在 C 代码中实现, 暂时不深究)
 
@@ -113,7 +115,6 @@ def handle_torch_function(public_api: Callable, relevant_args: Iterable[Any], *a
     raise TypeError("no implementation found for '{}' on types that implement __torch_function__: {}".format(func_name, [type(arg) for arg in overloaded_args]))
 ```
 
-
 ### `__getattr__`, `__getattribute__` 相关
 
 ```python
@@ -136,27 +137,27 @@ class M:
 m = M()
 print("="*20)
 print("trace: m(1)")
-m(1)
+m(1)   # 直接触发 __call__
 
 print("="*20)
 print("trace: m.__call__(1)")
-m.__call__(1)
+m.__call__(1)  # 先触发 __getattribute__, 再触发 __call__
 
 print("="*20)
 print("trace: m.foo()")
-m.foo()
+m.foo()  # 先触发 __getattribute__, 再触发 foo
 
 print("="*20)
 print("trace: m.foo")
-m.foo
+m.foo  # 触发 __getattribute__
 
 print("="*20)
 print("trace: m.a")
-m.a
+m.a  # 触发 __getattribute__
 
 print("="*20)
 print("trace: m.b")
-m.b
+m.b  # 先触发 __getattribute__, 再触发 __getattr__
 ```
 
 输出
