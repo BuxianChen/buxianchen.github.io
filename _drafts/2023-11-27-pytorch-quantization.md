@@ -15,6 +15,8 @@ date: 2023-11-27 11:10:04 +0800
 Pytorch Tutorials:
 
 - Static Quantization + QAT: [https://pytorch.org/tutorials/advanced/static_quantization_tutorial.html](https://pytorch.org/tutorials/advanced/static_quantization_tutorial.html)
+- Pytorch 的一篇指导性的博客: [https://pytorch.org/blog/quantization-in-practice/](https://pytorch.org/blog/quantization-in-practice/)
+- Pytorch Wiki: [https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)
 
 相关内容:
 
@@ -35,7 +37,7 @@ pytorch 文档中对量化的具体公式没有很清楚的描述, 可以参考�
 x = torch.tensor([-1.0, 0.0, 1.0, 20])
 qx = torch.quantize_per_tensor(x, scale=0.1, zero_point=10, dtype=torch.qint8)
 print(qx)
-print("int8 represent", torch.int_repr(qx))  # 获取 int8 数据, qx = (x / s + zero) = x / 0.1 + 10
+print("int8 represent", torch.int_repr(qx))  # 获取 int8 数据, qx = (x / s + zero) = x / 0.1 + 10, qx.int_repr() 也 OK
 print("dequantized data", qx.dequantize())   # 反量化回 float 类型
 qx.q_scale()  # 0.1
 qx.q_zero_point()  # 10
@@ -86,6 +88,23 @@ y3 = model2(x)
 
 print((y1-y2).abs().max(), sw*sq)
 print((y1-y3).abs().max())
+```
+
+这篇文档 [https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor) 记录了一些关于 Quantized Tensor 的接口
+
+```python
+x = torch.randn(2, 3)  # (B, in)
+scale, zero_point = 1e-4, 2
+dtype = torch.quint8
+x = torch.quantize_per_tensor(x, scale, zero_point, dtype)
+
+
+w = torch.randn(4, 3)  # (out, in)
+scale, zero_point = 1e-3, 2
+dtype = torch.qint8
+w = torch.quantize_per_tensor(w, scale, zero_point, dtype)
+
+torch.ao.nn.quantized.functional.linear(x, w)
 ```
 
 ## QAT (tensorflow)
