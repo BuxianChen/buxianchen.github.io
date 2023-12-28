@@ -8,16 +8,17 @@ date: 2023-11-27 11:10:04 +0800
 
 本文主要参考资料:
 
-- Pytorch 的一篇指导性的博客 (食用指南!): [https://pytorch.org/blog/quantization-in-practice/](https://pytorch.org/blog/quantization-in-practice/)
+- Pytorch 的一篇指导性的博客 (食用指南! 可快速上手使用转化为生产力, 读者如果仅出于使用目的可以只看这篇博客, 本文后续内容均可不看): [https://pytorch.org/blog/quantization-in-practice/](https://pytorch.org/blog/quantization-in-practice/)
 - 官方支持量化的博客 (内含 3 种量化模式的上层 API, 但不是完整可运行示例, 也不包括后续版本增加的 fx mode 量化): [https://pytorch.org/blog/introduction-to-quantization-on-pytorch/](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
 - 官方文档 (需要仔细琢磨): [https://pytorch.org/docs/2.1/quantization.html](https://pytorch.org/docs/2.1/quantization.html)
 - 官方 API 文档 (因为 Pytorch 提供了 3 种量化方式, 以及 eager/fx 模式, 并且 API 分为上层 API 和底层 API, 所以显得比较混乱, 个人还感觉 Pytorch 量化方面暴露的底层接口似乎不算完善): [https://pytorch.org/docs/2.1/quantization-support.html](https://pytorch.org/docs/2.1/quantization-support.html)
-- 官方 tutorial 搜索 (端到端的示例): [https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default](https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default)
 - Huggingface Optimum 的一篇关于模型量化的总览介绍: [https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization)
 - Pytorch wiki (包含了关于底层诸如 `torch.qint8` 数据类型的张量的一些 API): [https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)
+- 一篇详细介绍数学公式推导的博客, 非常值得仔细研究: [https://leimao.github.io/article/Neural-Networks-Quantization/](https://leimao.github.io/article/Neural-Networks-Quantization/)
 
-Pytorch Tutorials:
+Pytorch Tutorials (一些端到端的例子):
 
+- 官方 tutorial 搜索 (端到端的示例): [https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default](https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default)
 - Static Quantization + QAT: [https://pytorch.org/tutorials/advanced/static_quantization_tutorial.html](https://pytorch.org/tutorials/advanced/static_quantization_tutorial.html)
 
 相关内容 (本文可能不会过多涉及):
@@ -27,7 +28,7 @@ Pytorch Tutorials:
 - 一篇关于 QAT 的知乎[博客](https://zhuanlan.zhihu.com/p/548174416), 博客中有原论文及原Tensorflow实现的, Pytorch 的实现包含在本文内容中. 如果要分析 QAT 的原始 TensorFlow 实现, 主要看这个端到端的[例子](https://www.tensorflow.org/model_optimization/guide/quantization/training_example), 以及入口[源码](https://github.com/tensorflow/model-optimization/blob/v0.3.0/tensorflow_model_optimization/python/core/quantization/keras/quantize.py#L80), 这些代码与博客中的分析也基本一致.
 - 一篇基于Pytorch官方博客的笔记: [博客园笔记](https://www.cnblogs.com/LXP-Never/p/16822727.html)
 
-Pytorch 原生量化支持分为三类:
+Pytorch 原生量化支持有三类:
 
 - Post-Training Dynamic Quantization: 原理上是提前将权重转化为 int8, 在计算时, 每一层的输入先由浮点数转化为 int8 (量化过程的 `max_val` 和 `min_val` 动态决定), 之后用 int8 的输入与 int8 的权重进行矩阵乘法或卷积等运算, 然后将输出转换回浮点数. 因为每一层都需要动态计算出 `max_val` 和 `min_val`, 并且需要不断地对 activation 进行 int8 与浮点数之间的转换, 因此加速并不明显.
 - Post-Training Static Quantization: 原理上是模型训练好后, 首先将权重转换为 int8, 然后给模型喂入一批数据, 计算每层输入的分布情况, 由此得到每一层输出的 `min_val` 和 `max_val`, 因此初看上去, 可以节约动态计算 `min_val` 和 `max_val` 的时间, 然而实际上, 这种做法可以允许整个网络每层之间不必要进行 activation 的 int8 与浮点数之间的转换(为什么?), 所以可以获得比较大的加速.
@@ -200,7 +201,7 @@ qlinear = torch.ao.nn.quantized.dynamic.modules.linear.Linear(mod.in_feature, mo
 qlinear.set_weight_bias(qwight, mod.bias)
 ```
 
-#### `torch.ao.nn.quantized.dynamic.modules.linear.Linear`
+#### `torch.ao.nn.quantized.dynamic.modules.linear.Linear` 深入分析
 
 以线性层为例, 来分析一下底层实现, `torch==2.0.0` 源代码:
 
@@ -214,8 +215,9 @@ class Linear(nnq.Linear):  # 父类 nnq.Linear 是 torch.ao.nn.quantized.modules
         # self._packed_params._packed_params 是 torch._C.ScriptObject 对象, 包含了量化后的权重(torch.qint8类型)与偏置(fp32类型)
         # 输入: x(float32), 输出: Y(float32)
         Y = torch.ops.quantized.linear_dynamic(x, self._packed_params._packed_params, reduce_range=True)  # 此算子是 C++ 实现
-        return Y.to(x.dtype)
+        return Y.to(x.dtype)  # 这里是 float -> float 的转换 (也许会出现 fp16 与 fp32 之间的转换?)
     
+    # 伪代码刚刚已经分析过, 这里贴上源码
     @classmethod
     def from_float(cls, mod):
         # mod (nn.Module): a float module, either produced by torch.ao.quantization utilities or provided by the user
@@ -245,7 +247,54 @@ class Linear(nnq.Linear):  # 父类 nnq.Linear 是 torch.ao.nn.quantized.modules
         return qlinear
 ```
 
-为了搞清 `forward` 实现中 `torch.ops.quantized.linear_dynamic` 的具体算法细节, 怎么找 C 源码呢? 根据[README.md](https://github.com/pytorch/pytorch/tree/main/aten/src/ATen/native/quantized/README.md) 的指引, 注意到这两个文件:
+我们只需要重点关注 `from_float` (已用伪代码描述过) 和 `forward` 方法即可, 在此之前先简单看一个小细节: 注意到上面的 `self._packed_params` 是 `LinearPackedParams` 对象, 而 `self._packed_params._packed_params` 是 `torch.ScriptObject` 对象 (`torch.fx` 源码中也有出现)
+
+```python
+# torch/ao/nn/quantized/modules/linear.py
+class LinearPackedParams(torch.nn.Module):
+    _version = 3
+
+    def __init__(self, dtype=torch.qint8):
+        super().__init__()
+        self.dtype = dtype
+        if self.dtype == torch.qint8:
+            wq = torch._empty_affine_quantized([1, 1], scale=1.0, zero_point=0, dtype=torch.qint8)
+        elif self.dtype == torch.float16:
+            wq = torch.zeros([1, 1], dtype=torch.float)
+        self.set_weight_bias(wq, None)
+
+    @torch.jit.export
+    def set_weight_bias(self, weight: torch.Tensor, bias: Optional[torch.Tensor]) -> None:
+        if self.dtype == torch.qint8:
+            self._packed_params = torch.ops.quantized.linear_prepack(weight, bias)
+        elif self.dtype == torch.float16:
+            self._packed_params = torch.ops.quantized.linear_prepack_fp16(weight, bias)
+        else:
+            raise RuntimeError('Unsupported dtype on dynamic quantized linear!')
+    
+    def forward(self, x):
+        return x
+
+    # Version 1
+    #   self
+    #   |--- weight : Tensor
+    #   |--- bias : Tensor
+    #
+    # Version 2
+    #   self
+    #   |--- weight : Tensor
+    #   |--- bias : Tensor
+    #   |--- dtype : torch.dtype
+    #
+    # Version 3
+    #   self
+    #   |--- _packed_params : (Tensor, Tensor) representing (weight, bias)
+    #                         of LinearPackedParams
+    #   |--- dtype : torch.dtype
+    ...
+```
+
+我们回过头来搞清 `forward` 方法中使用到的 `torch.ops.quantized.linear_dynamic` 的具体算法细节, 怎么找 C 源码呢? 根据[README.md](https://github.com/pytorch/pytorch/tree/main/aten/src/ATen/native/quantized/README.md) 的指引, 注意到这两个文件:
 
 ```C++
 // aten/src/ATen/native/quantized/library.cpp
@@ -272,8 +321,6 @@ TORCH_LIBRARY_IMPL(_quantized, CPU, m) {
 而对应的最终实现 (仅关注 `fbgemm` 后端: FaceBook GEneral Matrix Multiplication) 在 `aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp` 中, [源码](https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp#L31), 而它最终会调用 fbgemm 的 [fbgemm::fbgemmPacked](https://github.com/pytorch/FBGEMM/blob/v0.5.0/src/Fbgemm.cc#L29) 函数
 
 **Highlight**
-
-------
 
 `torch.ops.quantized.linear_dynamic` 的执行逻辑如下 (以下源码在[这里]((https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp#L31)): `fbgemm` 后端):
 
@@ -337,6 +384,7 @@ def torch_dynamic_quantization_forward(layer, inp):
     output = qmodel(inp)
     return output
 
+# 不使用任何 pytorch quantization API 的实现
 def manual_dynamic_quantization_forward(layer, inp):
     weight = layer.weight
     bias = layer.bias
@@ -350,55 +398,6 @@ def manual_dynamic_quantization_forward(layer, inp):
     # step 4 矩阵乘法结果还原为 float32, 并加上偏置项
     # TODO
     return output
-```
-
-----
-
-一些细节: 注意到上面的 `self._packed_params` 是 `LinearPackedParams` 对象, 而 `self._packed_params._packed_params` 是 `torch.ScriptObject` 对象 (`torch.fx` 源码中也有出现)
-
-```python
-# torch/ao/nn/quantized/modules/linear.py
-class LinearPackedParams(torch.nn.Module):
-    _version = 3
-
-    def __init__(self, dtype=torch.qint8):
-        super().__init__()
-        self.dtype = dtype
-        if self.dtype == torch.qint8:
-            wq = torch._empty_affine_quantized([1, 1], scale=1.0, zero_point=0, dtype=torch.qint8)
-        elif self.dtype == torch.float16:
-            wq = torch.zeros([1, 1], dtype=torch.float)
-        self.set_weight_bias(wq, None)
-
-    @torch.jit.export
-    def set_weight_bias(self, weight: torch.Tensor, bias: Optional[torch.Tensor]) -> None:
-        if self.dtype == torch.qint8:
-            self._packed_params = torch.ops.quantized.linear_prepack(weight, bias)
-        elif self.dtype == torch.float16:
-            self._packed_params = torch.ops.quantized.linear_prepack_fp16(weight, bias)
-        else:
-            raise RuntimeError('Unsupported dtype on dynamic quantized linear!')
-    
-    def forward(self, x):
-        return x
-
-    # Version 1
-    #   self
-    #   |--- weight : Tensor
-    #   |--- bias : Tensor
-    #
-    # Version 2
-    #   self
-    #   |--- weight : Tensor
-    #   |--- bias : Tensor
-    #   |--- dtype : torch.dtype
-    #
-    # Version 3
-    #   self
-    #   |--- _packed_params : (Tensor, Tensor) representing (weight, bias)
-    #                         of LinearPackedParams
-    #   |--- dtype : torch.dtype
-    ...
 ```
 
 
