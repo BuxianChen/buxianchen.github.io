@@ -162,7 +162,7 @@ model_quantized = quantize_fx.convert_fx(model_prepared)
 
 ### eager mode
 
-大体上是遍历每一个层, 如果可以动态量化, 则进行一对一转换:
+`quantize_dynamic` 函数的执行逻辑大体上是遍历每一个层, 如果可以动态量化, 则进行一对一转换, 伪代码如下:
 
 ```python
 mapping = {
@@ -185,7 +185,212 @@ qlinear = torch.ao.nn.quantized.dynamic.modules.linear.Linear(mod.in_feature, mo
 qlinear.set_weight_bias(qwight, mod.bias)
 ```
 
-### fx mode
+#### `torch.ao.nn.quantized.dynamic.modules.linear.Linear`
+
+以线性层为例, 来分析一下底层实现, `torch==2.0.0` 源代码:
+
+```python
+# torch/ao/nn/quantized/dynamic/modules/linear.py
+class Linear(nnq.Linear):  # 父类 nnq.Linear 是 torch.ao.nn.quantized.modules.linear.Linear, 这里不再过多描述
+    def __init__(self, ...): ...
+    
+    def forward(self, x):  # 我们只看 qint8 的实现: 只支持fp16与qint8
+        # self._packed_params 是 torch.ao.nn.quantized.modules.linear.LinearPackedParams 对象
+        # self._packed_params._packed_params 是 torch._C.ScriptObject 对象, 包含了量化后的权重(torch.qint8类型)与偏置(fp32类型)
+        # 输入: x(float32), 输出: Y(float32)
+        Y = torch.ops.quantized.linear_dynamic(x, self._packed_params._packed_params, reduce_range=True)  # 此算子是 C++ 实现
+        return Y.to(x.dtype)
+    
+    @classmethod
+    def from_float(cls, mod):
+        # mod (nn.Module): a float module, either produced by torch.ao.quantization utilities or provided by the user
+        float_modules = [torch.nn.Linear, torch.nn.modules.linear.NonDynamicallyQuantizableLinear,
+                         torch.ao.nn.intrinsic.modules.fused.LinearReLU, torch.ao.nn.qat.dynamic.Linear]
+
+        assert type(mod) in float_modules, 'nn.quantized.dynamic.Linear.from_float only works for one of' + str([float_mod.__name__ for float_mod in float_modules])
+        assert hasattr(mod, 'qconfig'), 'Input float module must have qconfig defined'
+        if type(mod) == nni.LinearReLU:
+            mod = mod[0]
+        if mod.qconfig is not None and mod.qconfig.weight is not None:
+            weight_observer = mod.qconfig.weight()
+        else:
+            from torch.ao.quantization.qconfig import default_dynamic_qconfig
+            weight_observer = default_dynamic_qconfig.weight()
+        dtype = weight_observer.dtype
+        assert dtype in [torch.qint8, torch.float16], "The only supported dtypes for dynamic quantized linear are qint8 and float16 got: {}".format(dtype)
+        weight_observer(mod.weight)
+        if dtype == torch.qint8:
+            qweight = _quantize_weight(mod.weight.float(), weight_observer)
+        elif dtype == torch.float16:
+            qweight = mod.weight.float()
+        else:
+            raise RuntimeError('Unsupported dtype specified for dynamic quantized Linear!')
+        qlinear = cls(mod.in_features, mod.out_features, dtype=dtype)
+        qlinear.set_weight_bias(qweight, mod.bias)
+        return qlinear
+```
+
+为了搞清 `forward` 实现中 `torch.ops.quantized.linear_dynamic` 的具体算法细节, 怎么找 C 源码呢? 根据[README.md](https://github.com/pytorch/pytorch/tree/main/aten/src/ATen/native/quantized/README.md) 的指引, 注意到这两个文件:
+
+```C++
+// aten/src/ATen/native/quantized/library.cpp
+TORCH_LIBRARY(quantized, m) {
+    // ...
+    m.def(TORCH_SELECTIVE_SCHEMA("quantized::linear_dynamic(Tensor X, __torch__.torch.classes.quantized.LinearPackedParamsBase W_prepack, bool reduce_range=False) -> Tensor Y"));
+    m.def(TORCH_SELECTIVE_SCHEMA("_quantized::linear_dynamic(Tensor X, __torch__.torch.classes.quantized.LinearPackedParamsBase W_prepack, bool reduce_range=False) -> Tensor Y"));
+    // ...
+}
+
+// aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp
+TORCH_LIBRARY_IMPL(quantized, CPU, m) {
+  // ...
+  m.impl(TORCH_SELECTIVE_NAME("quantized::linear_dynamic"), TORCH_FN(QLinearDynamicInt8<false>::run));
+  // ...
+}
+
+TORCH_LIBRARY_IMPL(_quantized, CPU, m) {
+  // ...
+  m.impl(TORCH_SELECTIVE_NAME("_quantized::linear_dynamic"), TORCH_FN(QLinearDynamicInt8<false>::run));
+} 
+```
+
+而对应的最终实现 (仅关注 `fbgemm` 后端: FaceBook GEneral Matrix Multiplication) 在 `aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp` 中, [源码](https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp#L31), 而它最终会调用 fbgemm 的 [fbgemm::fbgemmPacked](https://github.com/pytorch/FBGEMM/blob/v0.5.0/src/Fbgemm.cc#L29) 函数
+
+**Highlight**
+
+------
+
+`torch.ops.quantized.linear_dynamic` 的执行逻辑如下 (以下源码在[这里]((https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp#L31)): `fbgemm` 后端):
+
+- 首先对输入数据进行量化, 使用最大最小非对称量化, 量化后的数据类型为 `uint8`
+- 分配输出结果的内存空间 `output` (float32 类型, 源码中可以见到 `at::kFloat` 这样的代码) 和计算缓冲空间 `buffer` (int32 类型, 源码中可以见到诸如 `at::kInt`, `buffer.data_ptr<int32_t>` 这样的代码)
+    ```c++
+    auto output = at::empty(out_sizes, input.options().dtype(at::kFloat));
+    auto buffer = at::empty_like(output, output.options().dtype(at::kInt), LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+    // ...
+    return output
+    ```
+- 然后调用 `fbgemm::fbgemmPacked` 进行计算: 此算子输入时量化后的输入 (uint8) 与量化权重 (int8) 及偏置 (float32), 输出为 float32 类型, 从以下摘录的源码及注释可以看出, 实际的计算过程是先执行 uint8 与 int8 的矩阵乘法, 计算结果累积在 int32 的 `buffer` 上, 然后转换会 float32, 最后加上 float32 的偏置
+    ```C++
+    // C(output) = A(input) x B(weight), where C, A, B are M x N, M x K, K x N matrices, respectively.
+    
+    // Process the per tensor quantization.
+    //
+    // After the uint8 * int8 matrix multiplication is performed, this
+    // operation does:
+    //  1) Add in row and column offsets to the rows and columns,
+    //  respectively.
+    //  2) Dequantize the results into floating point.
+    //  3) Add in the bias term.
+    fbgemm::ReQuantizeForFloat<ReluFused> outputProcObj(
+        /*nextop=*/doNothingObj,
+        /*Aq_scale=*/q_params.scale,
+        /*Bq_scale=*/w_scale.data(),
+        /*Aq_zero_point=*/q_params.zero_point,
+        /*Bq_zero_point=*/w_zp.data(),
+        /*row_offsets=*/packA.getRowOffsetBuffer(),
+        /*col_offsets=*/col_offsets.data(),
+        /*bias=*/bias_ptr,
+        /*nCol=*/N);
+
+    // Do the GEMM
+    fbgemm::fbgemmPacked(
+        /*packA=*/packA,
+        /*packB=*/*packB,
+        /*C=*/output.data_ptr<float>(),
+        /*C_buffer=*/buffer.data_ptr<int32_t>(),
+        /*ldc=*/N,
+        /*outProcess=*/outputProcObj,
+        /*thread_id=*/task_id,
+        /*num_threads=*/num_tasks);
+    ```
+
+由于继续深入 `fbgemm::fbgemmPacked` 有些过于琐碎(没能力看懂), 因此这里给出其[源码位置](https://github.com/pytorch/FBGEMM/blob/v0.5.0/src/Fbgemm.cc#L29)与之等价的 python 实现【TODO】
+
+```python
+import torch
+import torch.nn as nn
+from torch.quantization import quantize_dynamic
+
+batch_size, in_features, out_features = 2, 3, 4
+layer = torch.nn.Linear(in_features, out_features)
+inp = torch.distributions.normal.Normal(0, 1).sample((batch_size, in_features))
+
+def torch_dynamic_quantization_forward(layer, inp):
+    # fbgemm: per tensor quantize weight (qint8) and input (quint8)
+    qmodel = quantize_dynamic(model=torch.nn.Sequential(layer), qconfig_spec={nn.Linear}, dtype=torch.qint8, inplace=False)
+    output = qmodel(inp)
+    return output
+
+def manual_dynamic_quantization_forward(layer, inp):
+    weight = layer.weight
+    bias = layer.bias
+    # step 1 权重量化, 参考: torch.ao.quantization.observer.MinMaxObserver, 注意取整的方式(四舍五入 vs 向零取整)
+    observer = torch.ao.quantization.observer.MinMaxObserver()
+    observer(weight)
+    # step 2 输入量化, 参考: C++ 源码
+    # TODO
+    # step 3 输入与权重进行矩阵乘法:
+    # TODO
+    # step 4 矩阵乘法结果还原为 float32, 并加上偏置项
+    # TODO
+    return output
+```
+
+----
+
+一些细节: 注意到上面的 `self._packed_params` 是 `LinearPackedParams` 对象, 而 `self._packed_params._packed_params` 是 `torch.ScriptObject` 对象 (`torch.fx` 源码中也有出现)
+
+```python
+# torch/ao/nn/quantized/modules/linear.py
+class LinearPackedParams(torch.nn.Module):
+    _version = 3
+
+    def __init__(self, dtype=torch.qint8):
+        super().__init__()
+        self.dtype = dtype
+        if self.dtype == torch.qint8:
+            wq = torch._empty_affine_quantized([1, 1], scale=1.0, zero_point=0, dtype=torch.qint8)
+        elif self.dtype == torch.float16:
+            wq = torch.zeros([1, 1], dtype=torch.float)
+        self.set_weight_bias(wq, None)
+
+    @torch.jit.export
+    def set_weight_bias(self, weight: torch.Tensor, bias: Optional[torch.Tensor]) -> None:
+        if self.dtype == torch.qint8:
+            self._packed_params = torch.ops.quantized.linear_prepack(weight, bias)
+        elif self.dtype == torch.float16:
+            self._packed_params = torch.ops.quantized.linear_prepack_fp16(weight, bias)
+        else:
+            raise RuntimeError('Unsupported dtype on dynamic quantized linear!')
+    
+    def forward(self, x):
+        return x
+
+    # Version 1
+    #   self
+    #   |--- weight : Tensor
+    #   |--- bias : Tensor
+    #
+    # Version 2
+    #   self
+    #   |--- weight : Tensor
+    #   |--- bias : Tensor
+    #   |--- dtype : torch.dtype
+    #
+    # Version 3
+    #   self
+    #   |--- _packed_params : (Tensor, Tensor) representing (weight, bias)
+    #                         of LinearPackedParams
+    #   |--- dtype : torch.dtype
+    ...
+```
+
+
+### fx mode (TODO)
+
+
+## Static Quantization(TODO)
 
 
 ## QAT (tensorflow)
@@ -200,3 +405,5 @@ def quantize_model(to_quantize: tf.keras.Model):
     annotated_model = tf.keras.models.clone_model(to_annotate, input_tensors=None, clone_function=_add_quant_wrapper)
     return quantize_apply(annotated_model)
 ```
+
+## QAT (pytorch)
