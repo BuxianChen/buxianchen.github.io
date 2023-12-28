@@ -252,4 +252,31 @@
       @include relative-font-size(1.125);
     }
   }
+
+  /* 设置标题后面跟上井号, 并设置 alert 块样式(用法参考 T5 博客) */
+  h2:after {
+    content: "# ";
+    color: gray;
+  }
+  h3:after {
+    content: "## ";
+    color: gray;
+  }
+  h4:after {
+    content: "### ";
+    color: gray;
+  }
+  h5:after {
+    content: "#### ";
+    color: gray;
+  }
+  .alert-red {
+      padding: 1em;
+      border: 1px solid #f44336;
+      background-color: #ffebee;
+      color: #f44336;
+      /* font-weight: bold; */
+      margin-top: 1em;
+      margin-bottom: 1em
+  }
 }

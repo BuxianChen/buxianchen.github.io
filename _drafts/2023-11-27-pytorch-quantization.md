@@ -4,21 +4,23 @@ title: "(WIP) Pytorch Quantization"
 date: 2023-11-27 11:10:04 +0800
 ---
 
-参考资料:
+## 总览
 
-- Pytorch 的一篇指导性的博客（食用指南！）: [https://pytorch.org/blog/quantization-in-practice/](https://pytorch.org/blog/quantization-in-practice/)
-- 官方支持量化的博客: [https://pytorch.org/blog/introduction-to-quantization-on-pytorch/](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
-- 官方文档: [https://pytorch.org/docs/2.1/quantization.html](https://pytorch.org/docs/2.1/quantization.html)
-- 官方API文档: [https://pytorch.org/docs/2.1/quantization-support.html](https://pytorch.org/docs/2.1/quantization-support.html)
-- 官方tutorial搜索: [https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default](https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default)
-- Huggingface Optimum 的一篇概念介绍: [https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization)
+本文主要参考资料:
+
+- Pytorch 的一篇指导性的博客 (食用指南!): [https://pytorch.org/blog/quantization-in-practice/](https://pytorch.org/blog/quantization-in-practice/)
+- 官方支持量化的博客 (内含 3 种量化模式的上层 API, 但不是完整可运行示例, 也不包括后续版本增加的 fx mode 量化): [https://pytorch.org/blog/introduction-to-quantization-on-pytorch/](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
+- 官方文档 (需要仔细琢磨): [https://pytorch.org/docs/2.1/quantization.html](https://pytorch.org/docs/2.1/quantization.html)
+- 官方 API 文档 (因为 Pytorch 提供了 3 种量化方式, 以及 eager/fx 模式, 并且 API 分为上层 API 和底层 API, 所以显得比较混乱, 个人还感觉 Pytorch 量化方面暴露的底层接口似乎不算完善): [https://pytorch.org/docs/2.1/quantization-support.html](https://pytorch.org/docs/2.1/quantization-support.html)
+- 官方 tutorial 搜索 (端到端的示例): [https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default](https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default)
+- Huggingface Optimum 的一篇关于模型量化的总览介绍: [https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization)
+- Pytorch wiki (包含了关于底层诸如 `torch.qint8` 数据类型的张量的一些 API): [https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)
 
 Pytorch Tutorials:
 
 - Static Quantization + QAT: [https://pytorch.org/tutorials/advanced/static_quantization_tutorial.html](https://pytorch.org/tutorials/advanced/static_quantization_tutorial.html)
-- Pytorch Wiki: [https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)
 
-相关内容:
+相关内容 (本文可能不会过多涉及):
 
 - QLoRA: [https://huggingface.co/blog/4bit-transformers-bitsandbytes](https://huggingface.co/blog/4bit-transformers-bitsandbytes)
 - FP8 paper: [FP8 formats for deep learning](https://arxiv.org/pdf/2209.05433.pdf): 英伟达 H100 引入, 文中写 E4M3 的最大值是 448, 但笔者按 IEEE 754 算是 240, 其余均吻合. 原因是 E4M3 不完全遵循 IEEE 754, 而 E5M2 遵循 IEEE 754 (参考: [博客](https://lambdalabs.com/blog/nvidia-hopper-h100-and-fp8-support))
@@ -33,7 +35,7 @@ Pytorch 原生量化支持分为三类:
 
 ## 注意事项
 
-Pytorch 的量化功能目前仅支持 CPU, 在量化算法方面, 不同的软件例如 TensorRT 都有着各自的量化策略, 并没有所谓的"正统". 从使用者的角度更多还是了解大致的原理, 用即可. 原理上只需要记住以下几点:
+Pytorch 的量化功能目前仅支持 CPU (不确定, 应该支持 GPU, 待确认), 在量化算法方面, 不同的软件例如 TensorRT 都有着各自的量化策略, 并没有所谓的"正统". 从使用者的角度更多还是了解大致的原理, 用即可. 原理上只需要记住以下几点:
 
 以下是 baseline
 
@@ -53,6 +55,10 @@ Pytorch 原生支持的量化算法因为只支持 CPU, 所以应该暂时没啥
 - 线性层 (`torch.ao.nn.quantized.dynamic.modules.linear.Linear`): 只量化权重, 不量化偏置, 注意这是一种选择, 而不是不能做
 - 卷积层, 仅支持静态量化, 动态量化不支持(Pytorch 开发团队认为这个算子做动态量化精度损失太大, 所以干脆不予支持, 注意这是一种选择, 而不是不能做)
 
+
+## 底层接口
+
+本节只介绍一部分底层接口, 其余底层接口与具体的量化算法结合起来在后续章节介绍.
 
 pytorch 文档中对量化的具体公式没有很清楚的描述, 可以参考这个 [blog](https://leimao.github.io/article/Neural-Networks-Quantization/)
 
@@ -132,7 +138,14 @@ torch.ao.nn.quantized.functional.linear(x, w)
 
 ## Dynamic Quantization
 
-参考[这里](https://pytorch.org/blog/quantization-in-practice/#post-training-dynamicweight-only-quantization), 运行环境: torch==2.0.0, python 3.10
+### 使用方式
+
+涉及如下 3 个高级 API:
+
+- eager mode: `torch.quantization.quantize_dynamic`
+- fx mode: `torch.quantization.quantize_fx.prepare_fx`, `torch.quantization.quantize_fx.convert_fx`
+
+以下是一个完整的示例, 参考自[这里](https://pytorch.org/blog/quantization-in-practice/#post-training-dynamicweight-only-quantization), 运行环境: torch==2.0.0, python 3.10
 
 ```python
 import torch
@@ -142,7 +155,7 @@ m = nn.Sequential(
   nn.Conv2d(2, 64, 8),
   nn.ReLU(),
   nn.Flatten(),
-  nn.Linear(16,10),
+  nn.Linear(64, 10),
   nn.LSTM(10, 10))
 
 m.eval()
@@ -159,6 +172,8 @@ qconfig_dict = {"": torch.quantization.default_dynamic_qconfig}  # An empty key 
 model_prepared = quantize_fx.prepare_fx(m, qconfig_dict, torch.rand(32, 2, 8, 8))
 model_quantized = quantize_fx.convert_fx(model_prepared)
 ```
+
+接下来具体分析上面的高级接口实际是怎么运作的
 
 ### eager mode
 

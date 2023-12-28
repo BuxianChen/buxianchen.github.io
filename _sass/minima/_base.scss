@@ -2,10 +2,21 @@
  * Reset some basic elements
  */
 body, h1, h2, h3, h4, h5, h6,
-p, blockquote, pre, hr,
+blockquote, pre, hr,
 dl, dd, ol, ul, figure {
   margin: 0;
   padding: 0;
+}
+
+/* 设定段落与段落之间为 1.5 倍行距 */
+p {
+  line-height: 1.5;
+  margin-bottom: 0.5em;
+}
+
+/* 设置 code 标签的大小与相应的父标签字体一样大 */
+body code, p code, h1 code, h2 code, h3 code, h4 code, h5 code, h6 code {
+  font-size: 1em;
 }
 
 
