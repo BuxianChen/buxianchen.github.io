@@ -81,7 +81,7 @@ $$
 
 接下来简单看下一些关于 quantized tensor 的底层 API, 主要参考资料: [1](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor), [2](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
 
-**quantized tensor 的创建**
+#### quantized tensor 的创建
 
 ```python
 x = torch.tensor([-1.0, 0.0, 1.0, 20])
@@ -98,7 +98,12 @@ qx.qscheme()  # torch.per_tensor_affine
 # dequantized data tensor([-1.0000,  0.0000,  1.0000, 11.7000])
 ```
 
-**quantized tensor 算子**
+#### quantized tensor 算子 (TODO)
+
+- 算子: `torch.ops.quantized`, 例如: `torch.ops.quantized.linear_dynamic`
+- nn.Module:
+- functional:
+- quantized tensor 方法:
 
 ```python
 x = torch.randn(2, 3)  # (B, in)
@@ -115,47 +120,6 @@ w = torch.quantize_per_tensor(w, scale, zero_point, dtype)
 torch.ao.nn.quantized.functional.linear(x, w)
 ```
 
-**待移除**
-
-
-dynamic quantization linear 层的计算逻辑
-
-```python
-model = torch.nn.Sequential(torch.nn.Linear(3, 10, bias=False))
-qmodel = torch.quantization.quantize_dynamic(
-    model, qconfig_spec={torch.nn.Linear}, dtype=torch.qint8
-)
-model2 = torch.nn.Sequential(torch.nn.Linear(3, 10, bias=False))
-model2[0].weight.data = qmodel[0].weight().dequantize().clone()
-
-# x = torch.tensor([[1, 2., 3], [2, 3, 4]])  # (2, 3), w:(10, 3)
-x = torch.rand(1, 3)
-
-# 正常用法: 直接利用 torch.nn.quantized.dynamic.modules.linear.Linear 与 float32 的输入做运算
-y1 = qmodel(x)
-
-qw = qmodel[0].weight()
-# 输入的量化方式存疑
-qx = torch.quantize_per_tensor_dynamic(x, dtype=torch.qint8, reduce_range=False)
-
-intw = qw.int_repr().to(torch.int64).T  # (3, 10)
-intx = qx.int_repr().to(torch.int64)    # (2, 3)
-
-zw = qw.q_zero_point()
-zx = qx.q_zero_point()
-
-sw = qw.q_scale()
-sq = qx.q_scale()
-
-# 手动将运算转为 int 计算(输入也做量化)
-y2 = sw * sq * (intx @ intw - zx * torch.ones_like(intx) @ intw - intx @ (zw * torch.ones_like(intw)) + zx*zw)
-
-# 将权重替换为量化后的, 输入不做量化, 这样与正常用法会有误差
-y3 = model2(x)
-
-print((y1-y2).abs().max(), sw*sq)
-print((y1-y3).abs().max())
-```
 
 ### observer
 
@@ -194,7 +158,7 @@ default_dynamic_quant_observer = PlaceholderObserver.with_args(
 # ...
 ```
 
-### qschema, QConfig, obeserver
+### qschema, QConfig, observer
 
 伪代码如下
 
@@ -462,6 +426,8 @@ TORCH_LIBRARY_IMPL(_quantized, CPU, m) {
 
 由于继续深入 `fbgemm::fbgemmPacked` 有些过于琐碎(没能力看懂), 因此这里给出其[源码位置](https://github.com/pytorch/FBGEMM/blob/v0.5.0/src/Fbgemm.cc#L29)与之等价的 python 实现
 
+**实现一: 不使用任何 pytorch quantization API 实现**
+
 ```python
 import torch
 import torch.nn as nn
@@ -573,7 +539,7 @@ def gemm(qweight, qinput, bias, weight_qparams, input_qparams):
 
     # 真正的实现是用 torch.int32 进行累加, 此处为了简单 qweight, qinput, buffer 其实都用了 torch.long 类型
     buffer = torch.zeros((m, n), dtype=torch.int64)
-    output = torch.zeros((m, n), dtype=torch.float64)  # 真实实现(fbgemm)用double类型
+    output = torch.zeros((m, n), dtype=torch.float32)  # 真实实现(fbgemm)用float32类型
 
     buffer += qinput @ qweight.T
     buffer -= qinput @ z_w.T
@@ -623,6 +589,39 @@ if __name__ == "__main__":
     torch_output = torch_dynamic_quantization_forward(layer, inp)
     manual_output = manual_dynamic_quantization_forward(layer, inp)
     print("测试手工实现与pytorch的差异:", (torch_output - manual_output).abs().max().item())  # 1.1920928955078125e-07
+```
+
+**实现二: 使用 pytorch quantization 的低阶 API 实现**
+
+```python
+batch_size, in_features, out_features = 20, 30, 40
+model = torch.nn.Sequential(torch.nn.Linear(in_features, out_features))
+qmodel = torch.quantization.quantize_dynamic(model, qconfig_spec={torch.nn.Linear}, dtype=torch.qint8, inplace=False)
+x = torch.rand(batch_size, in_features)
+
+# 方法一: 利用高阶 API 计算
+y1 = qmodel(x)
+
+# 方法二: 利用低阶 API 计算
+qw = qmodel[0].weight()  # symmtric=True, torch.qint8, reduce_range=False
+qx = torch.quantize_per_tensor_dynamic(x, dtype=torch.quint8, reduce_range=True)  # symmetric=False, 不确定是否与高阶API完全一致
+
+intw = qw.int_repr().to(torch.int64).T
+intx = qx.int_repr().to(torch.int64)
+
+zw = qw.q_zero_point()
+zx = qx.q_zero_point()
+
+sw = qw.q_scale()
+sq = qx.q_scale()
+
+y2 = model[0].bias + sw * sq * (intx @ intw - zx * torch.ones_like(intx) @ intw - intx @ (zw * torch.ones_like(intw)) + zx*zw)
+
+# 原始模型(未经量化)的输出
+y3 = model(x)
+
+print("高阶API与低阶API的实现差异:", (y1-y2).abs().max().item())
+print("量化前与量化后的计算误差:", (y1-y3).abs().max().item())
 ```
 
 
