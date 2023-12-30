@@ -8,13 +8,13 @@ date: 2023-11-27 11:10:04 +0800
 
 本文主要参考资料(TODO: 做序号, 正文中对这些参考资料按序号来, 但可能链到更准确的章节):
 
-- Pytorch 的一篇指导性的博客 (食用指南! 可快速上手使用转化为生产力, 读者如果仅出于使用目的可以只看这篇博客, 本文后续内容均可不看): [https://pytorch.org/blog/quantization-in-practice/](https://pytorch.org/blog/quantization-in-practice/)
-- 官方支持量化的博客 (内含 3 种量化模式的上层 API, 但不是完整可运行示例, 也不包括后续版本增加的 fx mode 量化): [https://pytorch.org/blog/introduction-to-quantization-on-pytorch/](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
-- 官方文档 (需要仔细琢磨): [https://pytorch.org/docs/2.1/quantization.html](https://pytorch.org/docs/2.1/quantization.html)
-- 官方 API 文档 (因为 Pytorch 提供了 3 种量化方式, 以及 eager/fx 模式, 并且 API 分为上层 API 和底层 API, 所以显得比较混乱, 个人还感觉 Pytorch 量化方面暴露的底层接口似乎不算完善): [https://pytorch.org/docs/2.1/quantization-support.html](https://pytorch.org/docs/2.1/quantization-support.html)
-- Huggingface Optimum 的一篇关于模型量化的总览介绍: [https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization)
-- Pytorch wiki (包含了关于底层诸如 `torch.qint8` 数据类型的张量的一些 API): [https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)
-- 一篇详细介绍数学公式推导的博客, 非常值得仔细研究: [https://leimao.github.io/article/Neural-Networks-Quantization/](https://leimao.github.io/article/Neural-Networks-Quantization/)
+- [A1] Pytorch 的一篇指导性的博客 (食用指南! 可快速上手使用转化为生产力, 读者如果仅出于使用目的可以只看这篇博客, 本文后续内容均可不看): [https://pytorch.org/blog/quantization-in-practice/](https://pytorch.org/blog/quantization-in-practice/)
+- [A2] 官方支持量化的博客 (内含 3 种量化模式的上层 API, 但不是完整可运行示例, 也不包括后续版本增加的 fx mode 量化): [https://pytorch.org/blog/introduction-to-quantization-on-pytorch/](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
+- [A3] 官方文档 (需要仔细琢磨): [https://pytorch.org/docs/2.1/quantization.html](https://pytorch.org/docs/2.1/quantization.html)
+- [A4] 官方 API 文档 (因为 Pytorch 提供了 3 种量化方式, 以及 eager/fx 模式, 并且 API 分为上层 API 和底层 API, 所以显得比较混乱, 个人还感觉 Pytorch 量化方面暴露的底层接口似乎不算完善): [https://pytorch.org/docs/2.1/quantization-support.html](https://pytorch.org/docs/2.1/quantization-support.html)
+- [A5] Huggingface Optimum 的一篇关于模型量化的总览介绍: [https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization)
+- [A6] Pytorch wiki (包含了关于底层诸如 `torch.qint8` 数据类型的张量的一些 API): [https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)
+- [A7] 一篇详细介绍数学公式推导的博客, 非常值得仔细研究: [https://leimao.github.io/article/Neural-Networks-Quantization/](https://leimao.github.io/article/Neural-Networks-Quantization/)
 
 Pytorch Tutorials (一些端到端的例子):
 
@@ -34,7 +34,7 @@ Pytorch 原生量化支持有三类:
 - Post-Training Static Quantization: 原理上是模型训练好后, 首先将权重转换为 int8, 然后给模型喂入一批数据, 计算每层输入的分布情况, 由此得到每一层输出的 `min_val` 和 `max_val`, 因此初看上去, 可以节约动态计算 `min_val` 和 `max_val` 的时间, 然而实际上, 这种做法可以允许整个网络每层之间不必要进行 activation 的 int8 与浮点数之间的转换(为什么?), 所以可以获得比较大的加速.
 - Quantization Aware Training: 训练过程中就加入量化损失
 
-源码目录(其余参考[1](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)):
+源码目录(其余参考[A6](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)):
 
 - python 代码: torch/ao/quantization, 早期版本位于 torch/quantization, 为了保持兼容性, 目前在 torch/quantization 目录下的 python 脚本都是一些 import 语句
 
@@ -61,6 +61,86 @@ Pytorch 原生支持的量化算法因为只支持 CPU, 所以应该暂时没啥
 - 线性层 (`torch.ao.nn.quantized.dynamic.modules.linear.Linear`): 只量化权重, 不量化偏置, 注意这是一种选择, 而不是不能做
 - 卷积层, 仅支持静态量化, 动态量化不支持(Pytorch 开发团队认为这个算子做动态量化精度损失太大, 所以干脆不予支持, 注意这是一种选择, 而不是不能做)
 
+## 指南 (TODO)
+
+本节主要描述一些总览知识, 主要参考 [A3](https://pytorch.org/docs/2.1/quantization.html), [A4](https://pytorch.org/docs/2.1/quantization-support.html), [A5](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization), [A7](https://leimao.github.io/article/Neural-Networks-Quantization/)
+
+## API 总览 (TODO)
+
+本节主要梳理 pytorch 关于量化的源码目录及 API 接口的层次关系, 尤其关注上层接口, 主要是梳理 [A4](https://pytorch.org/docs/2.1/quantization-support.html), 但绝非完整介绍
+
+最上层的 API:
+
+- torch.ao.quantization.quantize: static quantization
+- torch.ao.quantization.quantize_dynamic: dynamic quantization
+- torch.ao.quantization.quantize_qat: QAT
+- torch.ao.quantization.prepare: static quantization
+- torch.ao.quantization.prepare_qat: QAT
+- torch.ao.quantization.convert: static quantization/QAT
+
+这些接口的关系可以用下面的伪代码来描述 (注意省略了一些使用细节, 仅仅是框架):
+
+```python
+# dynamic quantization
+qmodel = quantize_dynamic(model, ...)
+
+# static quantization
+# 方法一: 实质上与方法二等价
+qmodel = quantize(model, fn, ...)
+# 方法二:
+fp_model = prepare(model, fn, ...)  # fp_model 依然是 float 类型的模型
+fn(fp_model, ...)                   # 校准数据喂入模型
+qmodel = convert(fp_model)
+
+# QAT
+# 方法一: 实质上与方法二等价
+qmodel = quantize_qat(model, fn, ...)
+# 方法二:
+fp_model = prepare_qat(model, fn, ...)  # fp_model 依然是 float 类型的模型
+fn(fp_model, ...)                       # 校准数据喂入模型
+qmodel = convert(fp_model)
+```
+
+底层 API (省略 `torch.ao` 前缀):
+
+TODO: 这部分 API 还需理清, 很容易错乱, 目前感觉是分为 3 种量化的公共底层, 然后是 3 种量化各自的底层接口, 而 static quantization 和 QAT 有一部分接口也是共用的. 从 layer 的角度看, 大体上可能有这些:
+
+- dynamic quantization
+  - 量化前对 float layer 进行 layer 的融合
+  - 量化后的 int layer
+  - 量化后的 int fused layer
+- static quantization
+  - 量化前的准备 (fused) float layer (前向过程增加 observer 的调用)
+  - 量化后的 (fused) int layer
+- QAT
+  - 伪量化层
+  - 量化前的准备 (fused) float layer (前向过程增加 observer 及伪量化层的调用)
+  - 量化后的 (fused) int layer
+
+以下是具体的 API
+
+- 公共部分:
+    - quantizad tensor (感觉暴露的接口/文档并不完善): Tensor.dequantize, Tensor.q_scale, Tensor.q_zero_point, Tensor.int_repr, torch.quantize_per_tensor, torch.dequantize, torch.quantize_per_tensor_dynamic
+    - observer (观测输入输出浮点值的分布): quantization.observer.MinMaxObserver, quantization.observer.default_observer
+    - QConfig (量化配置, 例如 int8/uint8, 对称量化/非对称量化): torch.per_tensor_affine, quantization.qconfig.QConfig, quantization.qconfig.default_dynamic_qconfig
+- dynamic quantization:
+    - 量化后的 layer: nn.quantized.dynamic.Linear
+- static quantization/QAT:
+    - prepare model 的底层工具: fuse_modules, QuantStub
+    - 量化后的 fused layer: nn.intrinsic.quantized.ConvReLU2d
+    - 量化后的 layer: nn.quantized.Linear
+    - 量化后的 layer 的函数式接口: nn.quantized.functional.conv2d
+    - 量化算子 (非公开接口): torch.ops.quantized.conv2d
+- static quantization:
+    - prepare model (float model): nn.intrinsic.ConvReLU2d
+- QAT:
+    - prepare model: quantization.fake_quantize.FakeQuantize
+    - prepare model (float model): nn.intrinsic.qat.ConvReLU2d
+
+不确定的
+- nn.intrinsic.quantized.dynamic.LinearReLU, nn.qat.dynamic.Linear, nn.qat.Linear
+- nn.quantizable.LSTM
+
 
 ## 底层接口
 
@@ -68,7 +148,7 @@ Pytorch 原生支持的量化算法因为只支持 CPU, 所以应该暂时没啥
 
 ### quantized tensor
 
-pytorch 文档中对量化的具体数学公式及针对量化张量的算子没有十分仔细的描述, 对公式感兴趣的读者仔细研究这个[博客](https://leimao.github.io/article/Neural-Networks-Quantization/)
+pytorch 文档中对量化的具体数学公式及针对量化张量的算子没有十分仔细的描述, 对公式感兴趣的读者仔细研究这个博客 [A7](https://leimao.github.io/article/Neural-Networks-Quantization/), 但注意博客中的公式与 pytorch 中的不完全吻合
 
 Pytorch 的核心量化公式是:
 
@@ -79,7 +159,7 @@ $$
 
 其中 $x$ 是原始的浮点数值, $Xq$ 是量化后的整数值, $\tilde{x}$ 是量化-反量化后的浮点数值, $Z$ 是浮点数 $0.0$ 量化后的整数值 (从量化公式上看, 浮点数 $0.0$ 经过量化-反量化后会是无损的), $s$ 是浮点数放缩因子
 
-接下来简单看下一些关于 quantized tensor 的底层 API, 主要参考资料: [1](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor), [2](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
+接下来简单看下一些关于 quantized tensor 的底层 API, 主要参考资料: [A6](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor), [A2](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
 
 #### quantized tensor 的创建
 
@@ -123,7 +203,7 @@ torch.ao.nn.quantized.functional.linear(x, w)
 
 ### observer
 
-observer 的作用主要是确定原始浮点数据的 `min_val` 和 `max_val`, 并依据量化后整数数值范围计算好放缩系数及“整数零”, 代码主要位于 `torch/ao/quantization/observer.py` 下, 以下示例参考[1](https://pytorch.org/blog/quantization-in-practice/#calibration)
+observer 的作用主要是确定原始浮点数据的 `min_val` 和 `max_val`, 并依据量化后整数数值范围计算好放缩系数及“整数零”, 代码主要位于 `torch/ao/quantization/observer.py` 下, 以下示例参考[A1](https://pytorch.org/blog/quantization-in-practice/#calibration)
 
 ```python
 # 备注: 后续版本 pytorch 的源码计划由 torch/quantization -> torch/ao/quantization
@@ -203,7 +283,7 @@ quant_min, quant_max = 0, 15                          # reduce_range=True
 - eager mode: `torch.quantization.quantize_dynamic`
 - fx mode: `torch.quantization.quantize_fx.prepare_fx`, `torch.quantization.quantize_fx.convert_fx`
 
-以下是一个完整的示例, 参考自[这里](https://pytorch.org/blog/quantization-in-practice/#post-training-dynamicweight-only-quantization), 运行环境: torch==2.0.0, python 3.10
+以下是一个完整的示例, 参考自[A1](https://pytorch.org/blog/quantization-in-practice/#post-training-dynamicweight-only-quantization), 运行环境: torch==2.0.0, python 3.10
 
 ```python
 import torch
@@ -542,7 +622,7 @@ def gemm(qweight, qinput, bias, weight_qparams, input_qparams):
     output = torch.zeros((m, n), dtype=torch.float32)  # 真实实现(fbgemm)用float32类型
 
     buffer += qinput @ qweight.T
-    buffer -= qinput @ z_w.T
+    buffer -= qinput @ z_w.T   # 因为权重采用的是对称量化, 所以 z_w 实际上是 0, 因此可跳过这一部分
     buffer -= z_x @ qweight.T  # 可提前算好
     buffer += z_x @ z_w.T      # 可提前算好
 
@@ -603,8 +683,11 @@ x = torch.rand(batch_size, in_features)
 y1 = qmodel(x)
 
 # 方法二: 利用低阶 API 计算
-qw = qmodel[0].weight()  # symmtric=True, torch.qint8, reduce_range=False
-qx = torch.quantize_per_tensor_dynamic(x, dtype=torch.quint8, reduce_range=True)  # symmetric=False, 不确定是否与高阶API完全一致
+qw = qmodel[0].weight()  # symmetric=True, torch.qint8, reduce_range=False
+# 与高阶API的一致性: 
+# qlinear_dynamic 的源码(https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp#L31) 中使用 quant_utils::ChooseQuantizationParams(...) 来计算输入数据的量化参数
+# 而 quantize_per_tensor_dynamic 的源码(https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/QTensor.cpp#L17)也是用同样的方式计算
+qx = torch.quantize_per_tensor_dynamic(x, dtype=torch.quint8, reduce_range=True)  # symmetric=False
 
 intw = qw.int_repr().to(torch.int64).T
 intx = qx.int_repr().to(torch.int64)
@@ -633,7 +716,7 @@ print("量化前与量化后的计算误差:", (y1-y3).abs().max().item())
 
 ## QAT (tensorflow)
 
-参考 [Realease](https://github.com/tensorflow/model-optimization/releases?page=2) 列表, 相关版本: `tensorflow==2.0.0`, `model_optimization==0.3.0`
+参考 [Release](https://github.com/tensorflow/model-optimization/releases?page=2) 列表, 相关版本: `tensorflow==2.0.0`, `model_optimization==0.3.0`
 
 ```python
 # tensorflow_model_optimization/python/core/quantization/keras/quantize.py
