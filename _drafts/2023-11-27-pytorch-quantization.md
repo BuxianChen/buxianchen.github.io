@@ -4,9 +4,13 @@ title: "(WIP) Pytorch Quantization"
 date: 2023-11-27 11:10:04 +0800
 ---
 
+## 动机
+
+了解模型量化的基本原理, 以及 Pytorch 对这些量化算法的实现
+
 ## 总览
 
-本文主要参考资料(TODO: 做序号, 正文中对这些参考资料按序号来, 但可能链到更准确的章节):
+本文主要参考资料:
 
 - [A1] Pytorch 的一篇指导性的博客 (食用指南! 可快速上手使用转化为生产力, 读者如果仅出于使用目的可以只看这篇博客, 本文后续内容均可不看): [https://pytorch.org/blog/quantization-in-practice/](https://pytorch.org/blog/quantization-in-practice/)
 - [A2] 官方支持量化的博客 (内含 3 种量化模式的上层 API, 但不是完整可运行示例, 也不包括后续版本增加的 fx mode 量化): [https://pytorch.org/blog/introduction-to-quantization-on-pytorch/](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
@@ -28,18 +32,95 @@ Pytorch Tutorials (一些端到端的例子):
 - 一篇关于 QAT 的知乎[博客](https://zhuanlan.zhihu.com/p/548174416), 博客中有原论文及原Tensorflow实现的, Pytorch 的实现包含在本文内容中. 如果要分析 QAT 的原始 TensorFlow 实现, 主要看这个端到端的[例子](https://www.tensorflow.org/model_optimization/guide/quantization/training_example), 以及入口[源码](https://github.com/tensorflow/model-optimization/blob/v0.3.0/tensorflow_model_optimization/python/core/quantization/keras/quantize.py#L80), 这些代码与博客中的分析也基本一致.
 - 一篇基于Pytorch官方博客的笔记: [博客园笔记](https://www.cnblogs.com/LXP-Never/p/16822727.html)
 
-Pytorch 原生量化支持有三类:
+Pytorch 原生量化支持有三类 (关于计算流程的描述也可参见官方文档 [A3](https://pytorch.org/docs/2.1/quantization.html#eager-mode-quantization) 的各个 Diagram):
 
-- Post-Training Dynamic Quantization: 原理上是提前将权重转化为 int8, 在计算时, 每一层的输入先由浮点数转化为 int8 (量化过程的 `max_val` 和 `min_val` 动态决定), 之后用 int8 的输入与 int8 的权重进行矩阵乘法或卷积等运算, 然后将输出转换回浮点数. 因为每一层都需要动态计算出 `max_val` 和 `min_val`, 并且需要不断地对 activation 进行 int8 与浮点数之间的转换, 因此加速并不明显.
-- Post-Training Static Quantization: 原理上是模型训练好后, 首先将权重转换为 int8, 然后给模型喂入一批数据, 计算每层输入的分布情况, 由此得到每一层输出的 `min_val` 和 `max_val`, 因此初看上去, 可以节约动态计算 `min_val` 和 `max_val` 的时间, 然而实际上, 这种做法可以允许整个网络每层之间不必要进行 activation 的 int8 与浮点数之间的转换(为什么?), 所以可以获得比较大的加速.
-- Quantization Aware Training: 训练过程中就加入量化损失
+**Post-Training Dynamic Quantization**
+
+原理上是提前将权重转化为 int8, 在计算时, 每一层的输入 (activation) 先由浮点数转化为 int8 (这一量化过程动态决定, 例如用输入数据的 `max_val` 和 `min_val` 确定量化过程的放缩因子与零点), 之后用 int8 的输入与 int8 的权重进行矩阵乘法或卷积等运算得到结果, 然后将结果转换回浮点数. 因为每一层都需要动态计算出 `max_val` 和 `min_val`, 并且需要不断地对 activation 进行 int8 与浮点数之间的转换, 因此加速并不明显.
+
+```
+# original model
+# all tensors and computations are in floating point
+previous_layer_fp32 -- linear_fp32 -- activation_fp32 -- next_layer_fp32
+                 /
+linear_weight_fp32
+
+# dynamically quantized model
+# linear and LSTM weights are in int8
+previous_layer_fp32 -- linear_int8_w_fp32_inp -- activation_fp32 -- next_layer_fp32
+                     /
+   linear_weight_int8
+```
+
+**Post-Training Static Quantization**
+
+原理上是模型训练好后, 首先将权重转换为 int8, 然后给模型喂入一批数据, 计算每层输入 (activation) 的分布情况, 由此得到每一层输入及输出的量化放缩因子与零点 (例如通过统计 `max_val` 和 `min_val` 做到), 模型推理过程如下: 每一层的输入都是 int8 类型, 然后直接与 int8 权重进行 int8 矩阵乘法等运算, 然后根据输出的放缩因子进行少量的取整操作得到 int8 的输出 (可参见 [A7](https://leimao.github.io/article/Neural-Networks-Quantization/#Quantized-Matrix-Multiplication) 的公式). 另外, 输入层需要做一次 float 到 int 的静态量化, 输出层需要做一次反量化得到结果.
+
+```
+# original model
+# all tensors and computations are in floating point
+previous_layer_fp32 -- linear_fp32 -- activation_fp32 -- next_layer_fp32
+                    /
+    linear_weight_fp32
+
+# statically quantized model
+# weights and activations are in int8
+previous_layer_int8 -- linear_with_activation_int8 -- next_layer_int8
+                    /
+  linear_weight_int8
+```
+
+**Quantization Aware Training**
+
+训练过程中就加入量化损失, 量化后的模型可以是 dynamic/static/weight-only 量化的 (按英文术语说是: QAT for dynamic/static/weight-only quantization), 以下图例实际上只体现了 static quantization 的情形
+
+```
+# original model
+# all tensors and computations are in floating point
+previous_layer_fp32 -- linear_fp32 -- activation_fp32 -- next_layer_fp32
+                      /
+    linear_weight_fp32
+
+# fq 代表一次量化加一次反量化过程, 因此 fq 的输出仍然是浮点数
+# model with fake_quants for modeling quantization numerics during training
+previous_layer_fp32 -- fq -- linear_fp32 -- activation_fp32 -- fq -- next_layer_fp32
+                           /
+   linear_weight_fp32 -- fq
+
+# quantized model
+# weights and activations are in int8 (same as static quantization)
+previous_layer_int8 -- linear_with_activation_int8 -- next_layer_int8
+                     /
+   linear_weight_int8
+```
+
+需要注意的是, 还存在着另一个术语:
+
+**Weight-Only Quantization**
+
+原理是只对权重进行量化, 在计算时, 每一层的输入是浮点数, 权重被反量化会浮点数, 然后直接执行浮点数的算子得到结果. 因此这种量化方式在计算时实际上都是浮点运算.
+
+```
+# original model
+# all tensors and computations are in floating point
+previous_layer_fp32 -- linear_fp32 -- activation_fp32 -- next_layer_fp32
+                    /
+    linear_weight_fp32
+
+# Weight-Only Quantization
+# weights are in int8, activations are in float
+previous_layer_fp32 -- linear_with_activation_fp32 -- next_layer_fp32
+                            /
+linear_weight_int8 -- dequantized_linear_weight_fp32
+```
+
 
 源码目录(其余参考[A6](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)):
 
 - python 代码: torch/ao/quantization, 早期版本位于 torch/quantization, 为了保持兼容性, 目前在 torch/quantization 目录下的 python 脚本都是一些 import 语句
 
 
-## 注意事项
+## 注意事项 (TODO, 可能合并进总览这一节中)
 
 Pytorch 的量化功能目前仅支持 CPU (不确定, 应该支持 GPU, 待确认), 在量化算法方面, 不同的软件例如 TensorRT 都有着各自的量化策略, 并没有所谓的"正统". 从使用者的角度更多还是了解大致的原理, 用即可. 原理上只需要记住以下几点:
 
@@ -61,7 +142,7 @@ Pytorch 原生支持的量化算法因为只支持 CPU, 所以应该暂时没啥
 - 线性层 (`torch.ao.nn.quantized.dynamic.modules.linear.Linear`): 只量化权重, 不量化偏置, 注意这是一种选择, 而不是不能做
 - 卷积层, 仅支持静态量化, 动态量化不支持(Pytorch 开发团队认为这个算子做动态量化精度损失太大, 所以干脆不予支持, 注意这是一种选择, 而不是不能做)
 
-## 指南 (TODO)
+## 指南 (TODO, 可能直接合并进总览这一节中)
 
 本节主要描述一些总览知识, 主要参考 [A3](https://pytorch.org/docs/2.1/quantization.html), [A4](https://pytorch.org/docs/2.1/quantization-support.html), [A5](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization), [A7](https://leimao.github.io/article/Neural-Networks-Quantization/)
 
@@ -142,19 +223,34 @@ TODO: 这部分 API 还需理清, 很容易错乱, 目前感觉是分为 3 种�
 - nn.quantizable.LSTM
 
 
+这些上层 API 与底层 API 之间的联系在官方文档中解释和代码示例中里解释的比较清楚
+
+- [A3-post-training-dynamic-quantization](https://pytorch.org/docs/2.1/quantization.html#post-training-dynamic-quantization): dynamic quantization 原理
+- [A3-post-training-static-quantization](https://pytorch.org/docs/2.1/quantization.html#post-training-static-quantization): static quantization 原理
+- [A3-quantization-aware-training-for-static-quantization](https://pytorch.org/docs/2.1/quantization.html#quantization-aware-training-for-static-quantization): QAT 原理
+- [A3-quantization-custom-module-api](https://pytorch.org/docs/2.1/quantization.html#quantization-custom-module-api): 自定义量化教程, 解释了上层 API 与底层 API 间的联系
+
+static quantization/QAT 使用注意事项 (即需要对原模型的代码进行变动, 例如增加 `QuantStub` 和 `DeQuantStub` 层, 使用 `FloatFunctional` 替换一些 `add`, `cat` 操作): [A3-model-preparation-for-eager-mode-static-quantization](https://pytorch.org/docs/2.1/quantization.html#model-preparation-for-eager-mode-static-quantization)
+
+基于 torch.fx 的量化方式: 以笔者目前的观点看, 正是因为 eager mode 的使用有上述注意事项, 使得使用者需要对原模型的代码进行小变动或重构, 而更理想的方式是不对原模型的代码进行变动, torch.fx 量化方式就是为了做到这一点.
+
+下面会先具体介绍一下底层接口, 之后再分章节从上层接口的官方使用示例作为源码分析目标, 介绍各个量化算法的具体流程及相应的实现方式.
+
 ## 底层接口
 
 本节只介绍一部分底层接口, 其余底层接口与具体的量化算法结合起来在后续章节介绍.
 
 ### quantized tensor
 
-pytorch 文档中对量化的具体数学公式及针对量化张量的算子没有十分仔细的描述, 对公式感兴趣的读者仔细研究这个博客 [A7](https://leimao.github.io/article/Neural-Networks-Quantization/), 但注意博客中的公式与 pytorch 中的不完全吻合
+(TODO: 这句话需要调整一下) pytorch 文档中对量化的具体数学公式及针对量化张量的算子没有十分仔细的描述, 对公式感兴趣的读者仔细研究这个博客 [A7](https://leimao.github.io/article/Neural-Networks-Quantization/)
 
 Pytorch 的核心量化公式是:
 
 $$
-Xq = round(\frac{x}{s}) + Z \quad (quantization)\\
-\tilde{x}=(Xq - Z) * s \quad (dequantization)
+\begin{align*}
+Xq &= round(\frac{x}{s}) + Z \quad (quantization)\\
+\tilde{x}&=(Xq - Z) * s \quad (dequantization)
+\end{align*}
 $$
 
 其中 $x$ 是原始的浮点数值, $Xq$ 是量化后的整数值, $\tilde{x}$ 是量化-反量化后的浮点数值, $Z$ 是浮点数 $0.0$ 量化后的整数值 (从量化公式上看, 浮点数 $0.0$ 经过量化-反量化后会是无损的), $s$ 是浮点数放缩因子
@@ -325,17 +421,19 @@ mapping = {
 mod: torch.nn.modules.linear.Linear = torch.nn.Linear(4, 5)
 new_mod = torch.ao.nn.quantized.dynamic.modules.linear.Linear.from_float(mod)  # 一对一转换
 
-
+# 因此主要就关注 from_float 方法及 forward 方法即可
 # torch.ao.nn.quantized.dynamic.modules.linear.Linear.from_float 的具体细节(一个分支)
 mod = torch.nn.Linear(64, 10)  # out: 64, in: 10
 observer = torch.ao.quantization.observer.MinMaxObserver()
-observer(mod.weight)  # from_float 方法中
+observer(mod.weight)
 wt_scale, wt_zp = observer.calculate_qparams()  # 在 torch.ao.nn.quantized.modules.utils._quant_weight 函数中
 
 qweight = torch.quantize_per_tensor(mod.weight.float(), float(wt_scale), int(wt_zp), torch.int8)
 qweight = _clamp_weights(qweight, observer, wt_scale, wt_zp)  # torch.ao.nn.quantized.modules.utils._clamp_weights
 qlinear = torch.ao.nn.quantized.dynamic.modules.linear.Linear(mod.in_feature, mod.out_feature, dtype=torch.int8)
 qlinear.set_weight_bias(qwight, mod.bias)
+
+# torch.ao.nn.quantized.dynamic.modules.linear.Linear.forward 见下面的分析
 ```
 
 #### `torch.ao.nn.quantized.dynamic.modules.linear.Linear` 深入分析
@@ -431,7 +529,7 @@ class LinearPackedParams(torch.nn.Module):
     ...
 ```
 
-我们回过头来搞清 `forward` 方法中使用到的 `torch.ops.quantized.linear_dynamic` 的具体算法细节, 怎么找 C 源码呢? 根据[README.md](https://github.com/pytorch/pytorch/tree/main/aten/src/ATen/native/quantized/README.md) 的指引, 注意到这两个文件:
+我们现在重点搞清 `forward` 方法中使用到的 `torch.ops.quantized.linear_dynamic` 的具体算法细节, 它是 C++ 实现的, 首先是怎么找到它的 C++ 源码呢? 根据[README.md](https://github.com/pytorch/pytorch/tree/main/aten/src/ATen/native/quantized/README.md) 的指引, 注意到这两个文件:
 
 ```C++
 // aten/src/ATen/native/quantized/library.cpp
@@ -462,14 +560,14 @@ TORCH_LIBRARY_IMPL(_quantized, CPU, m) {
 `torch.ops.quantized.linear_dynamic` 的执行逻辑如下 (以下源码在[这里]((https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp#L31)): `fbgemm` 后端):
 
 - 首先对输入数据进行量化, 使用最大最小非对称量化, 量化后的数据类型为 `uint8`
-- 分配输出结果的内存空间 `output` (float32 类型, 源码中可以见到 `at::kFloat` 这样的代码) 和计算缓冲空间 `buffer` (int32 类型, 源码中可以见到诸如 `at::kInt`, `buffer.data_ptr<int32_t>` 这样的代码)
+- 分配输出结果的内存空间 `output` (float32 数组, 源码中可以见到 `at::kFloat` 这样的代码) 和计算缓冲空间 `buffer` (int32 数组, 源码中可以见到诸如 `at::kInt`, `buffer.data_ptr<int32_t>` 这样的代码)
     ```c++
     auto output = at::empty(out_sizes, input.options().dtype(at::kFloat));
     auto buffer = at::empty_like(output, output.options().dtype(at::kInt), LEGACY_CONTIGUOUS_MEMORY_FORMAT);
     // ...
     return output
     ```
-- 然后调用 `fbgemm::fbgemmPacked` 进行计算: 此算子输入时量化后的输入 (uint8) 与量化权重 (int8) 及偏置 (float32), 输出为 float32 类型, 从以下摘录的源码及注释可以看出, 实际的计算过程是先执行 uint8 与 int8 的矩阵乘法, 计算结果累积在 int32 的 `buffer` 上, 然后转换会 float32, 最后加上 float32 的偏置
+- 然后调用 `fbgemm::fbgemmPacked` 进行计算: 此算子输入时量化后的输入 (uint8) 与量化权重 (int8) 及偏置 (float32), 输出为 float32 类型, 从以下摘录的源码及注释可以看出, 实际的计算过程是先执行 uint8 与 int8 的矩阵乘法, 计算结果累积在 int32 的 `buffer` 上, 然后转换回 float32 到 `output` 上, 最后加上 float32 的偏置
     ```C++
     // C(output) = A(input) x B(weight), where C, A, B are M x N, M x K, K x N matrices, respectively.
     
@@ -504,9 +602,74 @@ TORCH_LIBRARY_IMPL(_quantized, CPU, m) {
         /*num_threads=*/num_tasks);
     ```
 
-由于继续深入 `fbgemm::fbgemmPacked` 有些过于琐碎(没能力看懂), 因此这里给出其[源码位置](https://github.com/pytorch/FBGEMM/blob/v0.5.0/src/Fbgemm.cc#L29)与之等价的 python 实现
+由于继续深入 `fbgemm::fbgemmPacked` 有些过于琐碎(没能力看懂), 因此这里给出其[源码位置](https://github.com/pytorch/FBGEMM/blob/v0.5.0/src/Fbgemm.cc#L29)与之等价的 python 实现:
 
-**实现一: 不使用任何 pytorch quantization API 实现**
+**实现一: 使用 pytorch quantization 的低阶 API 实现 (完全对齐高阶API)**
+
+```python
+# from torch.ao.quantization.qconfig import default_dynamic_qconfig
+# from torch.ao.nn.quantized.modules.linear import LinearPackedParams
+from torch.ao.quantization.observer import MinMaxObserver
+from torch.ao.nn.quantized.modules.utils import _quantize_weight
+from torch.quantization import quantize_dynamic
+
+layer = torch.nn.Linear(4, 10)
+x = torch.rand(1, 4)
+dtype = torch.qint8
+
+# observer = default_dynamic_qconfig.weight()
+observer = MinMaxObserver(dtype=dtype, qscheme=torch.per_tensor_symmetric)
+observer(layer.weight)
+qweight = _quantize_weight(layer.weight.float(), observer)
+# packed_params = LinearPackedParams(dtype)
+# packed_params._packed_params = torch.ops.quantized.linear_prepack(qweight, layer.bias)
+packed_params = torch.ops.quantized.linear_prepack(qweight, layer.bias)  # torch.ScriptObject 对象
+# packed_params 有一个 unpack 方法: qweight, bias = packed_params.unpack()
+manual_res = torch.ops.quantized.linear_dynamic(x, packed_params, reduce_range=True)
+
+model_quantized = quantize_dynamic(model=torch.nn.Sequential(layer), qconfig_spec={nn.LSTM, nn.Linear}, dtype=torch.qint8, inplace=False)
+torch_res = model_quantized(x)
+
+print("高阶API与低阶API的实现差异:", (y1-y2).abs().max().item())  # 0.0
+```
+
+**实现二: 使用 pytorch quantization 的部分低阶 API 实现量化张量算子**
+
+```python
+batch_size, in_features, out_features = 20, 30, 40
+model = torch.nn.Sequential(torch.nn.Linear(in_features, out_features))
+qmodel = torch.quantization.quantize_dynamic(model, qconfig_spec={torch.nn.Linear}, dtype=torch.qint8, inplace=False)
+x = torch.rand(batch_size, in_features)
+
+# 方法一: 利用高阶 API 计算
+y1 = qmodel(x)
+
+# 方法二: 利用低阶 API 计算
+qw = qmodel[0].weight()  # symmetric=True, torch.qint8, reduce_range=False
+# 与高阶API的一致性: 
+# qlinear_dynamic 的源码(https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp#L31) 中使用 quant_utils::ChooseQuantizationParams(...) 来计算输入数据的量化参数
+# 而 quantize_per_tensor_dynamic 的源码(https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/QTensor.cpp#L17)也是用同样的方式计算
+qx = torch.quantize_per_tensor_dynamic(x, dtype=torch.quint8, reduce_range=True)  # symmetric=False
+
+intw = qw.int_repr().to(torch.int64).T
+intx = qx.int_repr().to(torch.int64)
+
+zw = qw.q_zero_point()
+zx = qx.q_zero_point()
+
+sw = qw.q_scale()
+sq = qx.q_scale()
+
+y2 = model[0].bias + sw * sq * (intx @ intw - zx * torch.ones_like(intx) @ intw - intx @ (zw * torch.ones_like(intw)) + zx*zw)
+
+# 原始模型(未经量化)的输出
+y3 = model(x)
+
+print("高阶API与低阶API的实现差异:", (y1-y2).abs().max().item())
+print("量化前与量化后的计算误差:", (y1-y3).abs().max().item())
+```
+
+**实现三: 不使用任何 pytorch quantization API 实现张量量化及算子**
 
 ```python
 import torch
@@ -669,42 +832,6 @@ if __name__ == "__main__":
     torch_output = torch_dynamic_quantization_forward(layer, inp)
     manual_output = manual_dynamic_quantization_forward(layer, inp)
     print("测试手工实现与pytorch的差异:", (torch_output - manual_output).abs().max().item())  # 1.1920928955078125e-07
-```
-
-**实现二: 使用 pytorch quantization 的低阶 API 实现**
-
-```python
-batch_size, in_features, out_features = 20, 30, 40
-model = torch.nn.Sequential(torch.nn.Linear(in_features, out_features))
-qmodel = torch.quantization.quantize_dynamic(model, qconfig_spec={torch.nn.Linear}, dtype=torch.qint8, inplace=False)
-x = torch.rand(batch_size, in_features)
-
-# 方法一: 利用高阶 API 计算
-y1 = qmodel(x)
-
-# 方法二: 利用低阶 API 计算
-qw = qmodel[0].weight()  # symmetric=True, torch.qint8, reduce_range=False
-# 与高阶API的一致性: 
-# qlinear_dynamic 的源码(https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/cpu/qlinear_dynamic.cpp#L31) 中使用 quant_utils::ChooseQuantizationParams(...) 来计算输入数据的量化参数
-# 而 quantize_per_tensor_dynamic 的源码(https://github.com/pytorch/pytorch/blob/v2.0.0/aten/src/ATen/native/quantized/QTensor.cpp#L17)也是用同样的方式计算
-qx = torch.quantize_per_tensor_dynamic(x, dtype=torch.quint8, reduce_range=True)  # symmetric=False
-
-intw = qw.int_repr().to(torch.int64).T
-intx = qx.int_repr().to(torch.int64)
-
-zw = qw.q_zero_point()
-zx = qx.q_zero_point()
-
-sw = qw.q_scale()
-sq = qx.q_scale()
-
-y2 = model[0].bias + sw * sq * (intx @ intw - zx * torch.ones_like(intx) @ intw - intx @ (zw * torch.ones_like(intw)) + zx*zw)
-
-# 原始模型(未经量化)的输出
-y3 = model(x)
-
-print("高阶API与低阶API的实现差异:", (y1-y2).abs().max().item())
-print("量化前与量化后的计算误差:", (y1-y3).abs().max().item())
 ```
 
 
