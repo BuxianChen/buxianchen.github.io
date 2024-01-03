@@ -142,6 +142,17 @@ Pytorch 原生支持的量化算法因为只支持 CPU, 所以应该暂时没啥
 - 线性层 (`torch.ao.nn.quantized.dynamic.modules.linear.Linear`): 只量化权重, 不量化偏置, 注意这是一种选择, 而不是不能做
 - 卷积层, 仅支持静态量化, 动态量化不支持(Pytorch 开发团队认为这个算子做动态量化精度损失太大, 所以干脆不予支持, 注意这是一种选择, 而不是不能做)
 
+misc:
+
+量化类型与计算时的累积类型 [A5](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization)
+
+- float16, accumulation data type float16
+- bfloat16, accumulation data type float32
+- int16, accumulation data type int32
+- int8, accumulation data type int32
+
+float32 -> float16 时 LayerNorm 的 eps 怎么办?
+
 ## 指南 (TODO, 可能直接合并进总览这一节中)
 
 本节主要描述一些总览知识, 主要参考 [A3](https://pytorch.org/docs/2.1/quantization.html), [A4](https://pytorch.org/docs/2.1/quantization-support.html), [A5](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization), [A7](https://leimao.github.io/article/Neural-Networks-Quantization/)
@@ -209,7 +220,7 @@ torch/ao/
     <td> torch.nn.intrinsic.quantized[.modules.linear_relu.LinearReLU] </td>
 </tr>
 <tr>
-    <td> nniq </td>
+    <td> nniqd </td>
     <td> torch.ao.nn.intrinsic.quantized.dynamic[.modules.linear_relu.LinearReLU] </td>
     <td> torch.nn.intrinsic.quantized.dynamic[.modules.linear_relu.LinearReLU] </td>
 </tr>
@@ -503,7 +514,56 @@ model_prepared = quantize_fx.prepare_fx(m, qconfig_dict, torch.rand(32, 2, 8, 8)
 model_quantized = quantize_fx.convert_fx(model_prepared)
 ```
 
-接下来具体分析上面的高级接口实际是怎么运作的
+一个稍微复杂的例子:
+
+```python
+import torch
+from torch import nn
+from torch.quantization import quantize_dynamic, fuse_modules
+import torch.ao.nn.intrinsic as nni
+
+m = nn.Sequential(
+  nn.Conv2d(2, 64, 8),
+  nn.ReLU(),
+  nn.Flatten(),
+  nn.Linear(64, 64),
+  nn.Linear(64, 10),
+  nn.ReLU(),
+  nn.LSTM(10, 10))
+
+m.eval()
+
+# 需要手动 fuse, 指定哪几层可以 fuse
+m = fuse_modules(m, [["4", "5"]], inplace=False)
+
+# 可以手动或者用默认的 qconfig_spec
+model_quantized = quantize_dynamic(
+    model=m, qconfig_spec={nn.LSTM, nni.LinearReLU}, dtype=torch.qint8, inplace=False
+)
+
+for ori_m, q_m in zip(m, model_quantized):
+    s = "未转换" if ori_m.__class__ is q_m.__class__ else "已转换"
+    print(s, ori_m.__class__, q_m.__class__)
+```
+
+输出结果
+
+```
+未转换 <class 'torch.nn.modules.conv.Conv2d'> <class 'torch.nn.modules.conv.Conv2d'>
+未转换 <class 'torch.nn.modules.activation.ReLU'> <class 'torch.nn.modules.activation.ReLU'>
+未转换 <class 'torch.nn.modules.flatten.Flatten'> <class 'torch.nn.modules.flatten.Flatten'>
+未转换 <class 'torch.nn.modules.linear.Linear'> <class 'torch.nn.modules.linear.Linear'>
+已转换 <class 'torch.ao.nn.intrinsic.modules.fused.LinearReLU'> <class 'torch.ao.nn.intrinsic.quantized.dynamic.modules.linear_relu.LinearReLU'>
+未转换 <class 'torch.nn.modules.linear.Identity'> <class 'torch.nn.modules.linear.Identity'>
+已转换 <class 'torch.nn.modules.rnn.LSTM'> <class 'torch.ao.nn.quantized.dynamic.modules.rnn.LSTM'>
+```
+
+**Highlight**: 由此可以看出运作逻辑如下:
+
+```
+nn.Linear  -- [quantize_dynamic] -- > nnqd.LinearReLU(int)
+nn.Linear(float) + nn.ReLU(float) -- [fuse_models] -->  nni.LinearReLU(float) + nn.Identity(float) -- [quantize_dynamic] --> nniqd.LinearReLU(int) + nn.Identity(float)
+```
 
 ### eager mode
 
@@ -958,34 +1018,13 @@ class M(torch.nn.Module):
 model_fp32 = M()
 model_fp32.eval()  # model must be set to eval mode for static quantization logic to work
 
-# attach a global qconfig, which contains information about what kind
-# of observers to attach. Use 'x86' for server inference and 'qnnpack'
-# for mobile inference. Other quantization configurations such as selecting
-# symmetric or asymmetric quantization and MinMax or L2Norm calibration techniques
-# can be specified here.
-# Note: the old 'fbgemm' is still available but 'x86' is the recommended default
-# for server inference.
-# model_fp32.qconfig = torch.ao.quantization.get_default_qconfig('fbgemm')
 model_fp32.qconfig = torch.ao.quantization.get_default_qconfig('x86')
-
-# Fuse the activations to preceding layers, where applicable.
-# This needs to be done manually depending on the model architecture.
-# Common fusions include `conv + relu` and `conv + batchnorm + relu`
 model_fp32_fused = torch.ao.quantization.fuse_modules(model_fp32, [['conv', 'relu']])
 
-# Prepare the model for static quantization. This inserts observers in
-# the model that will observe activation tensors during calibration.
 model_fp32_prepared = torch.ao.quantization.prepare(model_fp32_fused)
 
-# calibrate the prepared model to determine quantization parameters for activations
-# in a real world setting, the calibration would be done with a representative dataset
 input_fp32 = torch.randn(4, 1, 4, 4)
 model_fp32_prepared(input_fp32)
-
-# Convert the observed model to a quantized model. This does several things:
-# quantizes the weights, computes and stores the scale and bias value to be
-# used with each activation tensor, and replaces key operators with quantized
-# implementations.
 model_int8 = torch.ao.quantization.convert(model_fp32_prepared)
 
 # run the model, relevant calculations will happen in int8
@@ -1074,6 +1113,51 @@ _DEFAULT_CUSTOM_CONFIG_DICT = {
 ```
 
 **`propagate_qconfig_`**
+
+此函数用于将父 module 的 qconfig 属性传播给子 module (除非子 module 自己设置了 qconfig), 测试代码如下:
+
+```python
+from transformers import AutoModelForCausalLM
+from torch.ao.quantization import propagate_qconfig_, get_default_qconfig, get_default_qat_qconfig
+
+model = AutoModelForCausalLM.from_pretrained("./hf_download/gpt2")
+default_qconfig = get_default_qconfig()
+default_qat_qconfig = get_default_qat_qconfig()
+
+print("default_qconfig activation observer name:", default_qconfig.activation.p.func.__name__)  # "HistogramObserver"
+print("default_qat_qconfig activate observer name:", default_qat_qconfig.activation.p.func.__name__)  # "FusedMovingAvgObsFakeQuantize"
+
+model.qconfig = default_qconfig
+model.transformer.h[0].qconfig = default_qat_qconfig
+
+propagate_qconfig_(model)
+
+qconfig_observer_name_dict = {
+    name: m.qconfig.activation.p.func.__name__ for name, m in model.named_modules()
+}
+print({n: v for n, v in qconfig_observer_name_dict.items() if v != "HistogramObserver"})
+```
+
+输出:
+
+```
+default_qconfig activation observer name: HistogramObserver
+default_qat_qconfig activate observer name: FusedMovingAvgObsFakeQuantize
+
+{'transformer.h.0': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.ln_1': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.attn': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.attn.c_attn': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.attn.c_proj': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.attn.attn_dropout': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.attn.resid_dropout': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.ln_2': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.mlp': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.mlp.c_fc': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.mlp.c_proj': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.mlp.act': 'FusedMovingAvgObsFakeQuantize',
+ 'transformer.h.0.mlp.dropout': 'FusedMovingAvgObsFakeQuantize'}
+```
 
 
 
