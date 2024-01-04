@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Basics of CPU and GPU"
+title: "(LTS) Basics of CPU and GPU"
 date: 2023-11-18 10:10:04 +0800
 labels: [gpu,cuda]
 ---

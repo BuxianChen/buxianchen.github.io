@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) torch.fx"
+title: "(P0) torch.fx"
 date: 2023-11-28 11:10:04 +0800
 labels: [pytorch]
 ---

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Memory efficient inference (🤗's dispatch and offload)"
+title: "(Alpha) Memory efficient inference (🤗's dispatch and offload)"
 date: 2023-06-01 17:20:04 +0800
 labels: [transformers]
 ---

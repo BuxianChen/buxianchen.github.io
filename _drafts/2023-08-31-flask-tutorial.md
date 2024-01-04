@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) flask tutorial"
+title: "(P1) flask tutorial"
 date: 2023-08-31 20:00:04 +0800
 labels: [web, flask]
 ---

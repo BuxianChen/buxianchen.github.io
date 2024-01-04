@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Streamlit Tutorial"
+title: "(P1) Streamlit Tutorial"
 date: 2023-08-15 10:00:04 +0800
 labels: [web]
 ---

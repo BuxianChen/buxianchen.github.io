@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) NLP Model Architecture Examples"
+title: "(P1) NLP Model Architecture Examples"
 date: 2023-06-11 17:20:04 +0800
 labels: [transformers]
 ---

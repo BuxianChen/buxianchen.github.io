@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Memory efficient training"
+title: "(DEAD) Memory efficient training"
 date: 2023-05-25 23:20:04 +0800
 labels: [pytorch]
 ---

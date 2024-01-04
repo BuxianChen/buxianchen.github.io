@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) LLMs Survey"
+title: "(DEAD) LLMs Survey"
 date: 2023-05-04 14:31:04 +0800
 labels: [paper]
 ---

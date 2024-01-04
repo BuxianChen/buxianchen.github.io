@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Tensor Ops"
+title: "(LTS) Tensor Ops"
 date: 2023-03-24 14:31:04 +0800
 labels: [pytorch, numpy]
 ---

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) LLM.int8 详解"
+title: "(P1) LLM.int8 详解"
 date: 2023-10-24 11:10:04 +0800
 labels: [paper]
 ---

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Pytorch Distributed Data Parallel"
+title: "(Alpha) Pytorch Distributed Data Parallel"
 date: 2023-11-03 10:10:04 +0800
 labels: [pytorch]
 ---

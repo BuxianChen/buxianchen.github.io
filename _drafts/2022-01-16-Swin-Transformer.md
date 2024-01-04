@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP)李沐论文精读笔记20220115——Swin Transformer"
+title: "(P1) Swin Transformer 浅析"
 date: 2021-12-15 22:30:04 +0800
 ---
 

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Transformers 变体"
+title: "(P1) Transformers 变体"
 date: 2023-07-21 20:31:04 +0800
 labels: [paper]
 ---

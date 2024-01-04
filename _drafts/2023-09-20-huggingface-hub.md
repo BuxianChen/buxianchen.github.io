@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) 🤗 Hub"
+title: "(Alpha) 🤗 Hub"
 date: 2023-09-20 07:20:24 +0800
 labels: [huggingface, hub]
 ---

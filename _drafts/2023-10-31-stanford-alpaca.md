@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Stanford Alpaca"
+title: "(Alpha) Stanford Alpaca"
 date: 2023-10-31 11:10:04 +0800
 labels: [paper, llm]
 ---

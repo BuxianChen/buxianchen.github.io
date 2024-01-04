@@ -1,6 +1,6 @@
 ---
 layout: post
-title:  "(WIP)grep/find/sed/awk tutorial"
+title:  "(P1) grep/find/sed/awk tutorial"
 date: 2022-02-14 22:31:04 +0800
 ---
 

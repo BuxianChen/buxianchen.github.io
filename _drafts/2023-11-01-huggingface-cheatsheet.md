@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) huggingface cheatsheet"
+title: "(DEAD) huggingface cheatsheet"
 date: 2023-11-01 11:12:04 +0800
 labels: [huggingface]
 ---

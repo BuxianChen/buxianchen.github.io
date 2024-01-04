@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP)HMM-GMM Based ASR (Auto Speech Recogition)"
+title: "(DEAD) HMM-GMM Based ASR (Auto Speech Recogition)"
 date: 2022-02-11 22:30:04 +0800
 ---
 

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Pytorch 性能分析工具"
+title: "(P1) Pytorch 性能分析工具"
 date: 2023-06-15 14:10:04 +0800
 labels: [pytorch]
 ---

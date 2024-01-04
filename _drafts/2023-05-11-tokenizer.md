@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Tokenizer 详解"
+title: "(Alpha) Tokenizer 详解"
 date: 2023-05-11 10:01:04 +0800
 labels: [huggingface]
 ---

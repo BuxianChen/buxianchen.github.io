@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) 🤗 Transformers Trainer API"
+title: "(P1) 🤗 Transformers Trainer API"
 date: 2023-08-02 22:00:04 +0800
 labels: [huggingface]
 ---

@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP)html/css/javascript tutorial"
+title: "(LTS) html/css/javascript tutorial"
 date: 2021-12-15 22:30:04 +0800
 ---
 

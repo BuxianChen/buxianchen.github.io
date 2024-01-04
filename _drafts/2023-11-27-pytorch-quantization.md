@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Pytorch Quantization"
+title: "(P0) Pytorch Quantization"
 date: 2023-11-27 11:10:04 +0800
 ---
 

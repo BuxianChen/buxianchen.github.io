@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP)Jekyll tutorial"
+title: "(LTS) Jekyll tutorial"
 date: 2021-12-12 22:30:04 +0800
 ---
 # Jekyll tutorial

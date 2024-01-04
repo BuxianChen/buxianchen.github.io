@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Pytorch 源码学习 (草稿杂录)"
+title: "(LTS) Pytorch 源码学习 (草稿杂录)"
 date: 2023-10-12 10:20:24 +0800
 labels: [pytorch]
 ---

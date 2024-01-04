@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Langchain"
+title: "(P1) Langchain"
 date: 2023-11-22 11:10:04 +0800
 ---
 

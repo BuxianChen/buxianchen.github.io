@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP)GPT-1，2，3，instructGPT，chatGPT"
+title: "(P1) GPT-1，2，3，instructGPT，chatGPT"
 date: 2023-02-12 13:31:04 +0800
 labels: [limu, paper]
 ---

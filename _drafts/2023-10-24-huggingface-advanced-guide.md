@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) huggingface summary"
+title: "(LTS) huggingface summary"
 date: 2023-10-24 11:12:04 +0800
 labels: [huggingface]
 ---

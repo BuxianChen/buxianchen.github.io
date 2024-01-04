@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) Jekyll 排版记录"
+title: "(LTS) Jekyll 排版记录"
 date: 2021-12-19 22:30:04 +0800
 ---
 

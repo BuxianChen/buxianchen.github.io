@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) VIT、ViLT、MAE"
+title: "(P1) VIT、ViLT、MAE"
 date: 2023-02-12 14:31:04 +0800
 labels: [limu, paper]
 ---

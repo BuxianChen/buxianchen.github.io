@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(WIP) torch.distributed 总览及底层工具"
+title: "(P1) torch.distributed 总览及底层工具"
 date: 2023-11-04 14:10:04 +0800
 labels: [deepspeed]
 ---
