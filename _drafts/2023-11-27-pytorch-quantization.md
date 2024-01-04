@@ -483,9 +483,9 @@ quant_min, quant_max = -1 * (2 ** 31), (2 ** 31) - 1  # reduce_range=False
 quant_min, quant_max = 0, 15                          # reduce_range=True
 ```
 
-## 上层接口
+## <font color=red>上层接口</font>
 
-这里先给出整个 workflow 过程中 layer 的变化, 代码见下面 (关注 `QuantStub`, `nn.Linear`, `nn.LSTM`, `nn.Linear+nn.ReLU`, `DeQuantStub`)
+本节内容实际上是下面几节代码分析的总纲, 3 种量化涉及到几个上层 API 实际上就是对需要被量化的每一个子模型进行一对一转换, 这里先给出整个 workflow 过程中 layer 的变化, 对应的代码见本节后文, 我们这里关注 `QuantStub`, `nn.Linear`, `nn.LSTM`, `nn.Linear+nn.ReLU`, `DeQuantStub`, 这也涵盖了前面所提到的大多数 Module 类. **下面的示意图表示了每个上层 API 的输入与输出**
 
 **dynamic quantization**
 
@@ -612,8 +612,6 @@ model_prepared = quantize_fx.prepare_fx(m, qconfig_dict, torch.rand(32, 2, 8, 8)
 model_quantized = quantize_fx.convert_fx(model_prepared)
 ```
 
-### eager mode
-
 `quantize_dynamic` 函数的执行逻辑大体上是遍历每一个层, 如果可以动态量化, 则进行一对一转换, 伪代码如下:
 
 ```python
@@ -639,7 +637,7 @@ qlinear.set_weight_bias(qwight, mod.bias)
 # torch.ao.nn.quantized.dynamic.modules.linear.Linear.forward 见下面的分析
 ```
 
-#### `torch.ao.nn.quantized.dynamic.modules.linear.Linear` 深入分析
+### `torch.ao.nn.quantized.dynamic.modules.linear.Linear` 深入分析
 
 以线性层为例, 来分析一下底层实现, `torch==2.0.0` 源代码:
 
@@ -1038,15 +1036,16 @@ if __name__ == "__main__":
 ```
 
 
-### fx mode (TODO)
-
-
 ## Static Quantization(TODO)
+
+
+### 使用方式
+
+以下是一个完整的示例, 参考自[A1](https://pytorch.org/blog/quantization-in-practice/#post-training-dynamicweight-only-quantization), 运行环境: torch==2.1.0
 
 ```python
 import torch
 
-# define a floating point model where some layers could be statically quantized
 class M(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -1078,7 +1077,7 @@ model_int8 = torch.ao.quantization.convert(model_fp32_prepared)
 res = model_int8(input_fp32)
 ```
 
-#### `torch.ao.quantization.quantize.prepare` 浅析
+### `torch.ao.quantization.quantize.prepare` 浅析
 
 现在先分析一下上层接口 `prepare`, [源码](https://github.com/pytorch/pytorch/blob/v2.0.0/torch/ao/quantization/quantize.py#L263):
 
@@ -1156,7 +1155,6 @@ _DEFAULT_CUSTOM_CONFIG_DICT = {
         nn.quantizable.MultiheadAttention: nn.quantized.MultiheadAttention,  # torch.ao.nn.quantized.modules.activation.MultiheadAttention
     }
 }
-# 
 ```
 
 **`propagate_qconfig_`**
@@ -1205,6 +1203,8 @@ default_qat_qconfig activate observer name: FusedMovingAvgObsFakeQuantize
  'transformer.h.0.mlp.act': 'FusedMovingAvgObsFakeQuantize',
  'transformer.h.0.mlp.dropout': 'FusedMovingAvgObsFakeQuantize'}
 ```
+
+**`_add_observer_` (TODO)**
 
 
 
