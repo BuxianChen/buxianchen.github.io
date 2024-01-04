@@ -477,6 +477,67 @@ quant_min, quant_max = -1 * (2 ** 31), (2 ** 31) - 1  # reduce_range=False
 quant_min, quant_max = 0, 15                          # reduce_range=True
 ```
 
+## 上层接口
+
+使用示例参考 [A1](https://pytorch.org/blog/quantization-in-practice/), [A2](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/), [A3](https://pytorch.org/docs/2.1/quantization.html), 这份[代码](https://github.com/BuxianChen/snippet/blob/master/quantization/quant_methods_compare.py)汇总了一下如下简单的模型的量化过程
+
+```python
+m = nn.Sequential(
+    nn.Conv2d(2, 64, 8),
+    nn.ReLU(),
+    nn.Flatten(),
+    nn.Linear(64, 64),
+    nn.Linear(64, 10),  # 手动指定与接下来的 relu 融合
+    nn.ReLU(),
+    nn.LSTM(10, 10)
+)
+```
+
+过程如下(TODO, 见代码注释)
+
+
+结果如下:
+
+```
+<<<dynamic quantization>>>
+origin_float32_model              fused_float32_model                             dynamic_quantized_int8_model
+--------------------------------  ----------------------------------------------  ----------------------------------------------------------------------
+torch.nn.modules.conv.Conv2d      torch.nn.modules.conv.Conv2d                    torch.nn.modules.conv.Conv2d
+torch.nn.modules.activation.ReLU  torch.nn.modules.activation.ReLU                torch.nn.modules.activation.ReLU
+torch.nn.modules.flatten.Flatten  torch.nn.modules.flatten.Flatten                torch.nn.modules.flatten.Flatten
+torch.nn.modules.linear.Linear    torch.nn.modules.linear.Linear                  torch.nn.modules.linear.Linear
+torch.nn.modules.linear.Linear    torch.ao.nn.intrinsic.modules.fused.LinearReLU  torch.ao.nn.intrinsic.quantized.dynamic.modules.linear_relu.LinearReLU
+torch.nn.modules.activation.ReLU  torch.nn.modules.linear.Identity                torch.nn.modules.linear.Identity
+torch.nn.modules.rnn.LSTM         torch.nn.modules.rnn.LSTM                       torch.ao.nn.quantized.dynamic.modules.rnn.LSTM
+
+<<<static quantization>>>
+origin_float32_model              wrapped_float32_model                    fused_float32_model                             fused_float32_prepared_fp32_model                static_quantized_int8_model
+--------------------------------  ---------------------------------------  ----------------------------------------------  -----------------------------------------------  --------------------------------------------------------------
+<placeholder>                     torch.ao.quantization.stubs.QuantStub    torch.ao.quantization.stubs.QuantStub           *torch.ao.quantization.stubs.QuantStub           torch.ao.nn.quantized.modules.Quantize
+torch.nn.modules.conv.Conv2d      torch.nn.modules.conv.Conv2d             torch.nn.modules.conv.Conv2d                    *torch.nn.modules.conv.Conv2d                    torch.ao.nn.quantized.modules.conv.Conv2d
+torch.nn.modules.activation.ReLU  torch.nn.modules.activation.ReLU         torch.nn.modules.activation.ReLU                torch.nn.modules.activation.ReLU                 torch.nn.modules.activation.ReLU
+torch.nn.modules.flatten.Flatten  torch.nn.modules.flatten.Flatten         torch.nn.modules.flatten.Flatten                torch.nn.modules.flatten.Flatten                 torch.nn.modules.flatten.Flatten
+torch.nn.modules.linear.Linear    torch.nn.modules.linear.Linear           torch.nn.modules.linear.Linear                  *torch.nn.modules.linear.Linear                  torch.ao.nn.quantized.modules.linear.Linear
+torch.nn.modules.linear.Linear    torch.nn.modules.linear.Linear           torch.ao.nn.intrinsic.modules.fused.LinearReLU  *torch.ao.nn.intrinsic.modules.fused.LinearReLU  torch.ao.nn.intrinsic.quantized.modules.linear_relu.LinearReLU
+torch.nn.modules.activation.ReLU  torch.nn.modules.activation.ReLU         torch.nn.modules.linear.Identity                torch.nn.modules.linear.Identity                 torch.nn.modules.linear.Identity
+torch.nn.modules.rnn.LSTM         torch.nn.modules.rnn.LSTM                torch.nn.modules.rnn.LSTM                       torch.ao.nn.quantizable.modules.rnn.LSTM         torch.ao.nn.quantized.modules.rnn.LSTM
+<placeholder>                     torch.ao.quantization.stubs.DeQuantStub  torch.ao.quantization.stubs.DeQuantStub         torch.ao.quantization.stubs.DeQuantStub          torch.ao.nn.quantized.modules.DeQuantize
+
+<<<qat static quantization>>>
+origin_float32_model              wrapped_float32_model                    fused_float32_model                             fused_float32_prepared_fp32_model                          qat_static_quantized_int8_model
+--------------------------------  ---------------------------------------  ----------------------------------------------  ---------------------------------------------------------  --------------------------------------------------------------
+<placeholder>                     torch.ao.quantization.stubs.QuantStub    torch.ao.quantization.stubs.QuantStub           +torch.ao.quantization.stubs.QuantStub                     torch.ao.nn.quantized.modules.Quantize
+torch.nn.modules.conv.Conv2d      torch.nn.modules.conv.Conv2d             torch.nn.modules.conv.Conv2d                    +torch.ao.nn.qat.modules.conv.Conv2d                       torch.ao.nn.quantized.modules.conv.Conv2d
+torch.nn.modules.activation.ReLU  torch.nn.modules.activation.ReLU         torch.nn.modules.activation.ReLU                torch.nn.modules.activation.ReLU                           torch.nn.modules.activation.ReLU
+torch.nn.modules.flatten.Flatten  torch.nn.modules.flatten.Flatten         torch.nn.modules.flatten.Flatten                torch.nn.modules.flatten.Flatten                           torch.nn.modules.flatten.Flatten
+torch.nn.modules.linear.Linear    torch.nn.modules.linear.Linear           torch.nn.modules.linear.Linear                  +torch.ao.nn.qat.modules.linear.Linear                     torch.ao.nn.quantized.modules.linear.Linear
+torch.nn.modules.linear.Linear    torch.nn.modules.linear.Linear           torch.ao.nn.intrinsic.modules.fused.LinearReLU  +torch.ao.nn.intrinsic.qat.modules.linear_relu.LinearReLU  torch.ao.nn.intrinsic.quantized.modules.linear_relu.LinearReLU
+torch.nn.modules.activation.ReLU  torch.nn.modules.activation.ReLU         torch.nn.modules.linear.Identity                torch.nn.modules.linear.Identity                           torch.nn.modules.linear.Identity
+torch.nn.modules.rnn.LSTM         torch.nn.modules.rnn.LSTM                torch.nn.modules.rnn.LSTM                       torch.ao.nn.quantizable.modules.rnn.LSTM                   torch.ao.nn.quantized.modules.rnn.LSTM
+<placeholder>                     torch.ao.quantization.stubs.DeQuantStub  torch.ao.quantization.stubs.DeQuantStub         torch.ao.quantization.stubs.DeQuantStub                    torch.ao.nn.quantized.modules.DeQuantize
+```
+
+
 ## Dynamic Quantization
 
 ### 使用方式
