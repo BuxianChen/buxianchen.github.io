@@ -202,6 +202,7 @@ torch/ao/
   - `q`: quantized
   - `qat`: qat
   - `r`: reference
+- 在后面所绘制的 workflow 图里, 只有 `nnqr` 与 `nnqatd` 没有被使用到 (这两个模块待后续研究)
 
 <table>
 <tr>
@@ -253,6 +254,11 @@ torch/ao/
     <td> nnqatd </td>
     <td> torch.ao.nn.qat.dynamic[.modules.linear.Linear] </td>
     <td> torch.nn.qat.dynamic[.modules.linear.Linear] </td>
+</tr>
+<tr>
+    <td> nnqa </td>
+    <td> torch.ao.nn.quantizable[.modules.rnn.LSTM] </td>
+    <td> torch.nn.quantizable[.modules.rnn.LSTM] </td>
 </tr>
 </table>
 
@@ -479,7 +485,41 @@ quant_min, quant_max = 0, 15                          # reduce_range=True
 
 ## 上层接口
 
-使用示例参考 [A1](https://pytorch.org/blog/quantization-in-practice/), [A2](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/), [A3](https://pytorch.org/docs/2.1/quantization.html), 这份[代码](https://github.com/BuxianChen/snippet/blob/master/quantization/quant_methods_compare.py)汇总了一下如下简单的模型的量化过程
+这里先给出整个 workflow 过程中 layer 的变化, 代码见下面 (关注 `QuantStub`, `nn.Linear`, `nn.LSTM`, `nn.Linear+nn.ReLU`, `DeQuantStub`)
+
+**dynamic quantization**
+
+![](../assets/figures/pytorch-quantization/dynamic_quantization_top_level_api_workflow.png)
+
+**static quantization**
+
+![](../assets/figures/pytorch-quantization/static_quantization_top_level_api_workflow.png)
+
+**QAT**
+
+![](../assets/figures/pytorch-quantization/qat_top_level_api_workflow.png)
+
+关于上述的符号 `*` 和 `+` 的解释:
+
+static quantization (对应于符号 `*` ): 在 prepare 之后, 对于一个layer
+
+- 如果 layer 需要被量化或是 QuantStub 层, 那么它包含以下属性
+  - activation_post_process: ObserverBase, 它被注册为 layer 的 forward_hook, 用于观测 layer 层输出的取值范围
+- 如果 layer 是 DeQuantStub, 那么它什么都不包含
+- 如果 layer 无需量化, 则全流程保持为普通的 float 形式的 nn.Module, 且不会追加任何 hook 或子模块
+
+qat (对应于符号 `+` ): 在 prepare_qat 之后, 对于一个layer
+
+- 如果 layer 需要被量化, 那么它包含如下属性
+  - weight_fake_quant: FakeQuantizeBase, 在 layer 的 forward 函数中被调用, 用于对权重的量化与反量化
+  - weight_fake_quant.activation_post_process: ObserverBase, 在 layer.weight_fake_quant 的 forward 函数中被调用, 用于观测权重的取值范围
+  - activation_post_process: FakeQuantizeBase, 被注册为 layer 的 forward_hook, 用于对 layer 层输出进行量化与反量化
+  - activation_post_process.activation_post_process: ObserverBase, 在 layer.activation_post_process 的 forward 函数中被调用, 用于观测 layer 层输出的取值范围
+- 如果 layer 是 QuantStub, 那么它只包含 activation_post_process 和 activation_post_process.activation_post_process
+- 如果 layer 是 DeQuantStub, 那么它什么都不包含
+- 如果 layer 无需量化, 则全流程保持为普通的 float 形式的 nn.Module, 且不会追加任何 hook 或子模块
+
+使用示例参考 [A1](https://pytorch.org/blog/quantization-in-practice/), [A2](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/), [A3](https://pytorch.org/docs/2.1/quantization.html), 这份 [代码](https://github.com/BuxianChen/snippet/blob/master/quantization/quant_methods_compare.py) 汇总了一下如下简单的模型的量化过程, 也对应了上面的流程图.
 
 ```python
 m = nn.Sequential(
@@ -492,9 +532,6 @@ m = nn.Sequential(
     nn.LSTM(10, 10)
 )
 ```
-
-过程如下(TODO, 见代码注释)
-
 
 结果如下:
 
@@ -547,7 +584,7 @@ torch.nn.modules.rnn.LSTM         torch.nn.modules.rnn.LSTM                torch
 - eager mode: `torch.quantization.quantize_dynamic`
 - fx mode: `torch.quantization.quantize_fx.prepare_fx`, `torch.quantization.quantize_fx.convert_fx`
 
-以下是一个完整的示例, 参考自[A1](https://pytorch.org/blog/quantization-in-practice/#post-training-dynamicweight-only-quantization), 运行环境: torch==2.0.0, python 3.10
+以下是一个完整的示例, 参考自[A1](https://pytorch.org/blog/quantization-in-practice/#post-training-dynamicweight-only-quantization), 运行环境: torch==2.1.0
 
 ```python
 import torch
@@ -573,57 +610,6 @@ from torch.quantization import quantize_fx
 qconfig_dict = {"": torch.quantization.default_dynamic_qconfig}  # An empty key denotes the default applied to all modules
 model_prepared = quantize_fx.prepare_fx(m, qconfig_dict, torch.rand(32, 2, 8, 8))
 model_quantized = quantize_fx.convert_fx(model_prepared)
-```
-
-一个稍微复杂的例子:
-
-```python
-import torch
-from torch import nn
-from torch.quantization import quantize_dynamic, fuse_modules
-import torch.ao.nn.intrinsic as nni
-
-m = nn.Sequential(
-  nn.Conv2d(2, 64, 8),
-  nn.ReLU(),
-  nn.Flatten(),
-  nn.Linear(64, 64),
-  nn.Linear(64, 10),
-  nn.ReLU(),
-  nn.LSTM(10, 10))
-
-m.eval()
-
-# 需要手动 fuse, 指定哪几层可以 fuse
-m = fuse_modules(m, [["4", "5"]], inplace=False)
-
-# 可以手动或者用默认的 qconfig_spec
-model_quantized = quantize_dynamic(
-    model=m, qconfig_spec={nn.LSTM, nni.LinearReLU}, dtype=torch.qint8, inplace=False
-)
-
-for ori_m, q_m in zip(m, model_quantized):
-    s = "未转换" if ori_m.__class__ is q_m.__class__ else "已转换"
-    print(s, ori_m.__class__, q_m.__class__)
-```
-
-输出结果
-
-```
-未转换 <class 'torch.nn.modules.conv.Conv2d'> <class 'torch.nn.modules.conv.Conv2d'>
-未转换 <class 'torch.nn.modules.activation.ReLU'> <class 'torch.nn.modules.activation.ReLU'>
-未转换 <class 'torch.nn.modules.flatten.Flatten'> <class 'torch.nn.modules.flatten.Flatten'>
-未转换 <class 'torch.nn.modules.linear.Linear'> <class 'torch.nn.modules.linear.Linear'>
-已转换 <class 'torch.ao.nn.intrinsic.modules.fused.LinearReLU'> <class 'torch.ao.nn.intrinsic.quantized.dynamic.modules.linear_relu.LinearReLU'>
-未转换 <class 'torch.nn.modules.linear.Identity'> <class 'torch.nn.modules.linear.Identity'>
-已转换 <class 'torch.nn.modules.rnn.LSTM'> <class 'torch.ao.nn.quantized.dynamic.modules.rnn.LSTM'>
-```
-
-**Highlight**: 由此可以看出运作逻辑如下:
-
-```
-nn.Linear  -- [quantize_dynamic] -- > nnqd.LinearReLU(int)
-nn.Linear(float) + nn.ReLU(float) -- [fuse_models] -->  nni.LinearReLU(float) + nn.Identity(float) -- [quantize_dynamic] --> nniqd.LinearReLU(int) + nn.Identity(float)
 ```
 
 ### eager mode
