@@ -4,13 +4,13 @@ title: "(P0) Pytorch Quantization"
 date: 2023-11-27 11:10:04 +0800
 ---
 
-## 动机
+## (Alpha) 总览
+
+### 动机
 
 了解模型量化的基本原理, 以及 Pytorch 对这些量化算法的实现
 
-## 总览
-
-本文主要参考资料:
+### 参考资料
 
 - [A1] Pytorch 的一篇指导性的博客 (食用指南! 可快速上手使用转化为生产力, 读者如果仅出于使用目的可以只看这篇博客, 本文后续内容均可不看): [https://pytorch.org/blog/quantization-in-practice/](https://pytorch.org/blog/quantization-in-practice/)
 - [A2] 官方支持量化的博客 (内含 3 种量化模式的上层 API, 但不是完整可运行示例, 也不包括后续版本增加的 fx mode 量化): [https://pytorch.org/blog/introduction-to-quantization-on-pytorch/](https://pytorch.org/blog/introduction-to-quantization-on-pytorch/)
@@ -20,7 +20,7 @@ date: 2023-11-27 11:10:04 +0800
 - [A6] Pytorch wiki (包含了关于底层诸如 `torch.qint8` 数据类型的张量的一些 API): [https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)
 - [A7] 一篇详细介绍数学公式推导的博客, 非常值得仔细研究: [https://leimao.github.io/article/Neural-Networks-Quantization/](https://leimao.github.io/article/Neural-Networks-Quantization/)
 
-Pytorch Tutorials (一些端到端的例子):
+Pytorch Tutorials: 一些端到端的例子
 
 - 官方 tutorial 搜索 (端到端的示例): [https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default](https://pytorch.org/tutorials/search.html?q=quantization&check_keywords=yes&area=default)
 - Static Quantization + QAT: [https://pytorch.org/tutorials/advanced/static_quantization_tutorial.html](https://pytorch.org/tutorials/advanced/static_quantization_tutorial.html)
@@ -32,11 +32,13 @@ Pytorch Tutorials (一些端到端的例子):
 - 一篇关于 QAT 的知乎[博客](https://zhuanlan.zhihu.com/p/548174416), 博客中有原论文及原Tensorflow实现的, Pytorch 的实现包含在本文内容中. 如果要分析 QAT 的原始 TensorFlow 实现, 主要看这个端到端的[例子](https://www.tensorflow.org/model_optimization/guide/quantization/training_example), 以及入口[源码](https://github.com/tensorflow/model-optimization/blob/v0.3.0/tensorflow_model_optimization/python/core/quantization/keras/quantize.py#L80), 这些代码与博客中的分析也基本一致.
 - 一篇基于Pytorch官方博客的笔记: [博客园笔记](https://www.cnblogs.com/LXP-Never/p/16822727.html)
 
-Pytorch 原生量化支持有三类 (关于计算流程的描述也可参见官方文档 [A3](https://pytorch.org/docs/2.1/quantization.html#eager-mode-quantization) 的各个 Diagram):
+### 各种量化方法的推理流程
+
+我们一般将中间结果称为 activation, 即每一层的输入/输出. Pytorch 原生量化支持有三类, 我们先看它们在推理阶段的计算流程, 参考自 [A3](https://pytorch.org/docs/2.1/quantization.html#eager-mode-quantization):
 
 **Post-Training Dynamic Quantization**
 
-原理上是提前将权重转化为 int8, 在计算时, 每一层的输入 (activation) 先由浮点数转化为 int8 (这一量化过程动态决定, 例如用输入数据的 `max_val` 和 `min_val` 确定量化过程的放缩因子与零点), 之后用 int8 的输入与 int8 的权重进行矩阵乘法或卷积等运算得到结果, 然后将结果转换回浮点数. 因为每一层都需要动态计算出 `max_val` 和 `min_val`, 并且需要不断地对 activation 进行 int8 与浮点数之间的转换, 因此加速并不明显.
+原理上是提前将权重转化为 int8. 在计算时, 每一层的输入 (activation) 先由浮点数转化为 int8 (activation 的量化过程动态进行: 例如用输入数据的 `max_val` 和 `min_val` 确定量化过程的放缩因子与零点, 由此再将 activation 转化为 int8 类型), 之后用 int8 的类型的输入与 int8 的权重进行矩阵乘法或卷积等运算得到结果, 然后将结果转换回浮点数. 因为每一层都需要动态计算出 `max_val` 和 `min_val`, 并且需要不断地对 activation 进行 int8 与浮点数之间的转换, 因此加速并不明显.
 
 ```
 # original model
@@ -54,7 +56,7 @@ previous_layer_fp32 -- linear_int8_w_fp32_inp -- activation_fp32 -- next_layer_f
 
 **Post-Training Static Quantization**
 
-原理上是模型训练好后, 首先将权重转换为 int8, 然后给模型喂入一批数据, 计算每层输入 (activation) 的分布情况, 由此得到每一层输入及输出的量化放缩因子与零点 (例如通过统计 `max_val` 和 `min_val` 做到), 模型推理过程如下: 每一层的输入都是 int8 类型, 然后直接与 int8 权重进行 int8 矩阵乘法等运算, 然后根据输出的放缩因子进行少量的取整操作得到 int8 的输出 (可参见 [A7](https://leimao.github.io/article/Neural-Networks-Quantization/#Quantized-Matrix-Multiplication) 的公式). 另外, 输入层需要做一次 float 到 int 的静态量化, 输出层需要做一次反量化得到结果.
+原理上是模型训练好后, 首先将权重转换为 int8, 然后给模型喂入一批数据, 计算每层输入 (activation) 的分布情况, 由此得到每一层输入及输出的量化放缩因子与零点 (例如通过统计 `max_val` 和 `min_val` 做到), 模型推理过程如下: 每一层的输入都是 int8 类型, 然后直接与 int8 权重进行 int8 矩阵乘法等运算, 并根据输出的放缩因子进行少量的取整操作得到 int8 的输出 (可参见 [A7](https://leimao.github.io/article/Neural-Networks-Quantization/#Quantized-Matrix-Multiplication) 里的公式). 另外, 整个模型的输入层需要做一次 float 到 int 的静态量化, 输出层需要做一次反量化得到结果.
 
 ```
 # original model
@@ -72,7 +74,22 @@ previous_layer_int8 -- linear_with_activation_int8 -- next_layer_int8
 
 **Quantization Aware Training**
 
-训练过程中就加入量化损失, 量化后的模型可以是 dynamic/static/weight-only 量化的 (按英文术语说是: QAT for dynamic/static/weight-only quantization), 以下图例实际上只体现了 static quantization 的情形
+在模型的训练过程中就模拟量化过程, 量化后的模型可以是 dynamic/static/weight-only 量化的 (按英文术语说是: QAT for dynamic/static/weight-only quantization), 因此对于推理来说, 与 dynamic/static/weight-only 没有区别, 而在训练过程中插入一些 Quant-DeQuant 过程
+
+$$
+\hat{x} = f_d(f_q(x, s,z), s, z) = s(clip(round(\frac{x}{s}+z), a, b)-z)
+$$
+
+其中 $x$ 是原始数据, $\hat{x}$ 是经过量化-反量化操作后的结果 (浮点数), $s$ 是量化放缩系数 (浮点数), $z$ 是量化零点 (整数, 代表浮点数 0.0 的量化表示), $round$ 是取整函数, $clip$ 是截断函数, $a, b$ 代表量化值的整数表示最大值与最小值 (整数), $\alpha, \beta$ 则代表 $a, b$ 对应的反量化值 (浮点数), 上述量化反量化算子的近似梯度如下:
+
+$$
+\frac{\partial{\hat{x}}}{\partial{x}} = \begin{cases}
+1,\quad \alpha \leq x \leq \beta \\
+0,\quad otherwise \\
+\end{cases}
+$$
+
+关于梯度计算参考 [A7](https://leimao.github.io/article/Neural-Networks-Quantization/#Neural-Networks-Integer-Quantization-Modes), 以下体现了 QAT for static quantization 的情况:
 
 ```
 # original model
@@ -114,35 +131,13 @@ previous_layer_fp32 -- linear_with_activation_fp32 -- next_layer_fp32
 linear_weight_int8 -- dequantized_linear_weight_fp32
 ```
 
+### 使用
 
-源码目录(其余参考[A6](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)):
+参考这个示例: [https://github.com/BuxianChen/snippet/blob/master/quantization/quant_methods_compare.py](https://github.com/BuxianChen/snippet/blob/master/quantization/quant_methods_compare.py)
 
-- python 代码: torch/ao/quantization, 早期版本位于 torch/quantization, 为了保持兼容性, 目前在 torch/quantization 目录下的 python 脚本都是一些 import 语句
+### 注意事项与 FAQ
 
-
-## 注意事项 (TODO, 可能合并进总览这一节中)
-
-Pytorch 的量化功能目前仅支持 CPU (不确定, 应该支持 GPU, 待确认), 在量化算法方面, 不同的软件例如 TensorRT 都有着各自的量化策略, 并没有所谓的"正统". 从使用者的角度更多还是了解大致的原理, 用即可. 原理上只需要记住以下几点:
-
-以下是 baseline
-
-- Dynamic/Static 量化至 int8/uint8 的 baseline 是 RTN (round to nearset): 注意变体是 per tensor/channel, 如果需要详细了解更具体的算法细节参考 Pytorch/TensorRT 均可
-- QAT baseline 的核心思路待确认(Tensorflow vs Pytorch): 参考 tf/pytorch 的官方集成即可
-
-以下这几个是一些比较出名的量化算法(集成进了 huggingface transformer)
-
-- GPTQ
-- AWQ
-- LLM.int8 (bnb)
-
-至于平时的各种所谓的 int8/int4 训练, 一般都没有特定的标准算法?
-
-Pytorch 原生支持的量化算法因为只支持 CPU, 所以应该暂时没啥大用, 目前仅供学习, 而且很多实现也只是 Pytorch 的一种选择, 而不像 `torch.amp` 那样成为混合精度训练的事实标准之一.
-
-- 线性层 (`torch.ao.nn.quantized.dynamic.modules.linear.Linear`): 只量化权重, 不量化偏置, 注意这是一种选择, 而不是不能做
-- 卷积层, 仅支持静态量化, 动态量化不支持(Pytorch 开发团队认为这个算子做动态量化精度损失太大, 所以干脆不予支持, 注意这是一种选择, 而不是不能做)
-
-misc:
+Pytorch 的量化功能目前仅支持 CPU.
 
 量化类型与计算时的累积类型 [A5](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization)
 
@@ -153,15 +148,22 @@ misc:
 
 float32 -> float16 时 LayerNorm 的 eps 怎么办?
 
-## 指南 (TODO, 可能直接合并进总览这一节中)
+static quantization/QAT 使用注意事项 (即需要对原模型的代码进行变动, 例如增加 `QuantStub` 和 `DeQuantStub` 层, 使用 `FloatFunctional` 替换一些 `add`, `cat` 操作): [A3-model-preparation-for-eager-mode-static-quantization](https://pytorch.org/docs/2.1/quantization.html#model-preparation-for-eager-mode-static-quantization)
 
-本节主要描述一些总览知识, 主要参考 [A3](https://pytorch.org/docs/2.1/quantization.html), [A4](https://pytorch.org/docs/2.1/quantization-support.html), [A5](https://huggingface.co/docs/optimum/v1.16.1/en/concept_guides/quantization), [A7](https://leimao.github.io/article/Neural-Networks-Quantization/)
+fx mode 与 eager mode:
+- eager mode 需要使用者对原模型的代码进行上述小变动或重构, 而更理想的方式是不对原模型的代码进行变动, fx mode 可以实现这一点.
+- eager mode 的 `fuse_modules` 这一步需要手工指定需要 fuse 哪些层, 这需要使用者深入原模型代码细节去看哪些子模块需要被 fuse, 较难使用, 而 fx mode 可以避免这一点
 
-## API 总览 (TODO)
+## (Alpha) API 总览
 
 本节主要梳理 pytorch 关于量化的源码目录及 API 接口的层次关系, 尤其关注上层接口, 主要是梳理 [A4](https://pytorch.org/docs/2.1/quantization-support.html), 但绝非完整介绍
 
-源码目录节选
+### 源码位置
+
+- Python 代码主要位于 `torch/ao/nn` 和 `torch/ao/quantization`, Pytorch 早期版本则位于 `torch.nn` 和 `torch/quantization`, 为了保持兼容性, Pytorch 后续版本在这些目录的 Python 脚本里只包含了一些 `import` 语句
+- C++ 代码目录可参考[A6](https://github.com/pytorch/pytorch/wiki/Introducing-Quantized-Tensor)
+
+Python 源码目录节选
 
 ```
 torch/ao/
@@ -191,7 +193,9 @@ torch/ao/
     - ...
 ```
 
-关于 Module 的缩写及位置, 总结如下, 具体看下表
+### 涉及 Module 的模块位置
+
+关于 Module 的缩写及源码位置总结如下, 具体看下表
 
 - 新位置为 torch.ao.nn[.xxx], 对应原位置为 torch.nn[.xxx]
 - torch.ao.nn.intrinsic 目录底下都是 fused layer 相关的东西, 而 torch.ao.nn.[qat,quantized] 目录底下都是对应 `nn.Linear`, `nn.Conv2d` 的 layer
@@ -263,7 +267,9 @@ torch/ao/
 </table>
 
 
-最上层的 API:
+### 上层 API
+
+这些接口是面向用户的主要接口
 
 - torch.ao.quantization.quantize: static quantization
 - torch.ao.quantization.quantize_dynamic: dynamic quantization
@@ -295,57 +301,44 @@ fn(fp_model, ...)                       # 校准数据喂入模型
 qmodel = convert(fp_model)
 ```
 
-底层 API (省略 `torch.ao` 前缀):
+### 底层 API
 
-TODO: 这部分 API 还需理清, 很容易错乱, 目前感觉是分为 3 种量化的公共底层, 然后是 3 种量化各自的底层接口, 而 static quantization 和 QAT 有一部分接口也是共用的. 从 layer 的角度看, 大体上可能有这些:
+TODO: 本节与前面的重复度太高
 
-- dynamic quantization
-  - 量化前对 float layer 进行 layer 的融合
-  - 量化后的 int layer
-  - 量化后的 int fused layer
-- static quantization
-  - 量化前的准备 (fused) float layer (前向过程增加 observer 的调用)
-  - 量化后的 (fused) int layer
-- QAT
-  - 伪量化层
-  - 量化前的准备 (fused) float layer (前向过程增加 observer 及伪量化层的调用)
-  - 量化后的 (fused) int layer
-
-以下是具体的 API
+以下是具体的 API 总结, 省略了 `torch.ao` 前缀, 大致浏览即可, 大部分与 Module 相关的前面已经介绍过.
 
 - 公共部分:
     - quantizad tensor (感觉暴露的接口/文档并不完善): Tensor.dequantize, Tensor.q_scale, Tensor.q_zero_point, Tensor.int_repr, torch.quantize_per_tensor, torch.dequantize, torch.quantize_per_tensor_dynamic
     - observer (观测输入输出浮点值的分布): quantization.observer.MinMaxObserver, quantization.observer.default_observer
     - QConfig (量化配置, 例如 int8/uint8, 对称量化/非对称量化): torch.per_tensor_affine, quantization.qconfig.QConfig, quantization.qconfig.default_dynamic_qconfig
 - dynamic quantization:
-    - 量化后的 layer: nn.quantized.dynamic.Linear
-- static quantization/QAT:
-    - prepare model 的底层工具: fuse_modules, QuantStub
-    - 量化后的 fused layer: nn.intrinsic.quantized.ConvReLU2d
-    - 量化后的 layer: nn.quantized.Linear
-    - 量化后的 layer 的函数式接口: nn.quantized.functional.conv2d
-    - 量化算子 (非公开接口): torch.ops.quantized.conv2d
+    - 量化后的 int layer: nn.quantized.dynamic.Linear
+    - 量化后的 fused int layer: nn.intrinsic.quantized.dynamic.LinearReLU
+- static quantization / QAT:
+    - 调用 `prepare_model` 之前的准备工作: fuse_modules, QuantStub
+    - 量化后的 int layer: nn.quantized.Linear
+    - 量化后的 fused int layer: nn.intrinsic.quantized.ConvReLU2d
+    - 量化后的 int layer 函数式接口: nn.quantized.functional.conv2d
+    - 量化算子 (没有记录在文档上的接口): torch.ops.quantized.conv2d
 - static quantization:
-    - prepare model (float model): nn.intrinsic.ConvReLU2d
+    - 调用 `prepare_model` 之后的 fused float layer: nn.intrinsic.ConvReLU2d
 - QAT:
-    - prepare model: quantization.fake_quantize.FakeQuantize
-    - prepare model (float model): nn.intrinsic.qat.ConvReLU2d
+    - 伪量化层: quantization.fake_quantize.FakeQuantize
+    - 调用 `prepare_model` 之后的 fused float layer: nn.intrinsic.qat.ConvReLU2d
+    - 调用 `prepare_model` 之后的 float layer: nn.qat.Linear
 
-不确定的
-- nn.intrinsic.quantized.dynamic.LinearReLU, nn.qat.dynamic.Linear, nn.qat.Linear
-- nn.quantizable.LSTM
+其他:
+
+- nn.qat.dynamic.Linear: 不确定
+- nn.quantizable.LSTM, nn.quantizable.MultiheadAttention: static/QAT `prepare_model` 之后的 layer
 
 
-这些上层 API 与底层 API 之间的联系在官方文档中解释和代码示例中里解释的比较清楚
+这些上层 API 与底层 API 之间的联系在官方文档中解释和代码示例中里解释的比较清楚, 也可以直接参考后文对上层接口的具体介绍
 
 - [A3-post-training-dynamic-quantization](https://pytorch.org/docs/2.1/quantization.html#post-training-dynamic-quantization): dynamic quantization 原理
 - [A3-post-training-static-quantization](https://pytorch.org/docs/2.1/quantization.html#post-training-static-quantization): static quantization 原理
 - [A3-quantization-aware-training-for-static-quantization](https://pytorch.org/docs/2.1/quantization.html#quantization-aware-training-for-static-quantization): QAT 原理
-- [A3-quantization-custom-module-api](https://pytorch.org/docs/2.1/quantization.html#quantization-custom-module-api): 自定义量化教程, 解释了上层 API 与底层 API 间的联系
-
-static quantization/QAT 使用注意事项 (即需要对原模型的代码进行变动, 例如增加 `QuantStub` 和 `DeQuantStub` 层, 使用 `FloatFunctional` 替换一些 `add`, `cat` 操作): [A3-model-preparation-for-eager-mode-static-quantization](https://pytorch.org/docs/2.1/quantization.html#model-preparation-for-eager-mode-static-quantization)
-
-基于 torch.fx 的量化方式: 以笔者目前的观点看, 正是因为 eager mode 的使用有上述注意事项, 使得使用者需要对原模型的代码进行小变动或重构, 而更理想的方式是不对原模型的代码进行变动, torch.fx 量化方式就是为了做到这一点.
+- [A3-quantization-custom-module-api](https://pytorch.org/docs/2.1/quantization.html#quantization-custom-module-api): 自定义量化教程, 也一定程度上解释了上层 API 与底层 API 间的联系
 
 下面会先具体介绍一下底层接口, 之后再分章节从上层接口的官方使用示例作为源码分析目标, 介绍各个量化算法的具体流程及相应的实现方式.
 
@@ -389,7 +382,7 @@ qx.qscheme()  # torch.per_tensor_affine
 
 #### quantized tensor 算子 (TODO)
 
-- 算子: `torch.ops.quantized`, 例如: `torch.ops.quantized.linear_dynamic`
+- 算子: `torch.ops.quantized`, 例如: `torch.ops.quantized.linear_dynamic`, 这类 API 都没有被记录在 Pytorch 文档上, 可以通过查看相应 Module 的 forward 函数来观察
 - nn.Module:
 - functional:
 - quantized tensor 方法:
@@ -399,7 +392,6 @@ x = torch.randn(2, 3)  # (B, in)
 scale, zero_point = 1e-4, 2
 dtype = torch.quint8
 x = torch.quantize_per_tensor(x, scale, zero_point, dtype)
-
 
 w = torch.randn(4, 3)  # (out, in)
 scale, zero_point = 1e-3, 2
@@ -483,7 +475,23 @@ quant_min, quant_max = -1 * (2 ** 31), (2 ** 31) - 1  # reduce_range=False
 quant_min, quant_max = 0, 15                          # reduce_range=True
 ```
 
-## <font color=red>上层接口</font>
+### FakeQuantize
+
+关键的底层 OP 实际上是 `torch.fake_quantize_per_tensor_affine`
+
+```python
+x = torch.tensor(10.23)   # (-14.85, 10.75) 的范围内, qx 对 q 的梯度为 1.0
+scale = torch.tensor([0.1], dtype=torch.float)  # pytorch 的实现里不能对 scale 求导, scale 完全是由观测值确定的
+x.requires_grad = True
+# scale.requires_grad = True
+# RuntimeError: The function '_fake_quantize_per_tensor_affine_cachemask_tensor_qparams' is not differentiable with respect to argument 'scale'. This input cannot have requires_grad True.
+zero_point = torch.tensor([20], dtype=torch.int)
+qx = torch.fake_quantize_per_tensor_affine(x, scale, zero_point, -128, 127)
+qx.sum().backward()
+print(f"x: {x}, quantized x: {qx}, grad: {x.grad.item()}")
+```
+
+## (Highlight, Ready) 上层接口
 
 本节内容实际上是下面几节代码分析的总纲, 3 种量化涉及到几个上层 API 实际上就是对需要被量化的每一个子模型进行一对一转换, 这里先给出整个 workflow 过程中 layer 的变化, 对应的代码见本节后文, 我们这里关注 `QuantStub`, `nn.Linear`, `nn.LSTM`, `nn.Linear+nn.ReLU`, `DeQuantStub`, 这也涵盖了前面所提到的大多数 Module 类. **下面的示意图表示了每个上层 API 的输入与输出**
 
@@ -575,7 +583,7 @@ torch.nn.modules.rnn.LSTM         torch.nn.modules.rnn.LSTM                torch
 ```
 
 
-## Dynamic Quantization
+## (Alpha) Dynamic Quantization
 
 ### 使用方式
 
@@ -637,7 +645,7 @@ qlinear.set_weight_bias(qwight, mod.bias)
 # torch.ao.nn.quantized.dynamic.modules.linear.Linear.forward 见下面的分析
 ```
 
-### `torch.ao.nn.quantized.dynamic.modules.linear.Linear` 深入分析
+### after `quantize_dynamic`: `torch.ao.nn.quantized.dynamic.modules.linear.Linear` 深入分析
 
 以线性层为例, 来分析一下底层实现, `torch==2.0.0` 源代码:
 
@@ -1036,7 +1044,7 @@ if __name__ == "__main__":
 ```
 
 
-## Static Quantization(TODO)
+## Static Quantization
 
 
 ### 使用方式
@@ -1138,6 +1146,7 @@ def prepare(model, inplace=False, allow_list=None,
                       "passed correct configuration through `qconfig_dict` or "
                       "by assigning the `.qconfig` attribute directly on submodules")
 
+    # 给每个需要量化的 layer 追加一个 observer 的 module, 然后给这个 layer 追加上执行 observer 的 forward_hook (或 forward_pre_hook)
     _add_observer_(
         model, qconfig_propagation_list, observer_non_leaf_module_list,
         custom_module_class_mapping=custom_module_class_mapping)
@@ -1204,8 +1213,118 @@ default_qat_qconfig activate observer name: FusedMovingAvgObsFakeQuantize
  'transformer.h.0.mlp.dropout': 'FusedMovingAvgObsFakeQuantize'}
 ```
 
-**`_add_observer_` (TODO)**
+**swap_model**
 
+`_add_observer_` 本质上会对所有需要被 `prepare` 函数进行转换的子模块调用 `swap_module` 函数, 用 `new_mod` 来替换原本的 `mod`
+
+```python
+def swap_module(mod, mapping, custom_module_class_mapping):
+    new_mod = mod
+    if hasattr(mod, 'qconfig') and mod.qconfig is not None:
+        swapped = False
+        if type_before_parametrizations(mod) in custom_module_class_mapping:
+            # 通过 from_observed 转换 
+            new_mod = custom_module_class_mapping[type_before_parametrizations(mod)].from_observed(mod)
+            swapped = True
+        elif type_before_parametrizations(mod) in mapping:
+            qmod = mapping[type_before_parametrizations(mod)]
+            if hasattr(qmod, '_IS_REFERENCE') and qmod._IS_REFERENCE:
+                assert mod.qconfig is not None
+                weight_post_process = mod.qconfig.weight()
+                weight_post_process(mod.weight)
+                weight_qparams = get_qparam_dict(weight_post_process)
+                # 通过 from_float 转换
+                new_mod = qmod.from_float(mod, weight_qparams)
+            else:
+                new_mod = qmod.from_float(mod)
+            swapped = True
+
+        if swapped:
+            # 这里对 hook 的处理也很有意思: 移除 forward_hook 中的一些内容, 完全保留 forward_pre_hook
+            # Preserve module's pre forward hooks. They'll be called on quantized input
+            for pre_hook_fn in mod._forward_pre_hooks.values():
+                new_mod.register_forward_pre_hook(pre_hook_fn)
+            # Preserve module's post forward hooks except _observer_forward_hook
+            # After convert they'll work with quantized output
+            for hook_fn in mod._forward_hooks.values():
+                if hook_fn is not _observer_forward_hook:
+                    new_mod.register_forward_hook(hook_fn)
+
+            # respect device affinity when swapping modules
+            devices = _get_unique_devices_(mod)
+            assert len(devices) <= 1, (
+                "swap_module only works with cpu or single-device CUDA modules, "
+                "but got devices {}".format(devices)
+            )
+            device = next(iter(devices)) if len(devices) > 0 else None
+            if device:
+                new_mod.to(device)
+    return new_mod
+```
+
+## QAT (pytorch)
+
+### after `prepare_qat`: `torch.ao.nn.qat.modules.linear.Linear` 浅析
+
+这个 layer 是经过 `prepare_qat` 转换后的 float layer, 我们重点关注 forward 函数: 根据前面的描述, 它实际上还带着一个 `forward_hook`, 这个 hook 会对输出进行量化-反量化操作, 注意在 forward 函数中我们没有看到对输入进行量化-反量化操作 (可以理解成上一层的输出已经做了, 或者如果有必要 `prepare_qat` 也会注册 `forward_pre_hook` 来完成这件事, 待确认).
+
+```python
+from torch.ao.nn.intrinsic import LinearReLU
+
+class Linear(nn.Linear):
+    _FLOAT_MODULE = nn.Linear
+
+    def __init__(self, in_features, out_features, bias=True,
+                 qconfig=None, device=None, dtype=None) -> None:
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        super().__init__(in_features, out_features, bias, **factory_kwargs)
+        assert qconfig, 'qconfig must be provided for QAT module'
+        self.qconfig = qconfig
+        self.weight_fake_quant = qconfig.weight(factory_kwargs=factory_kwargs)
+
+    def forward(self, input):
+        return F.linear(input, self.weight_fake_quant(self.weight), self.bias)
+
+    @classmethod
+    def from_float(cls, mod):
+        r"""Create a qat module from a float module or qparams_dict
+            Args: `mod` a float module, either produced by torch.ao.quantization utilities
+            or directly from user
+        """
+        assert type_before_parametrizations(mod) == cls._FLOAT_MODULE, (
+            " qat."
+            + cls.__name__
+            + ".from_float only works for "
+            + cls._FLOAT_MODULE.__name__
+        )
+        assert hasattr(mod, "qconfig"), "Input float module must have qconfig defined"
+        assert mod.qconfig, "Input float module must have a valid qconfig"
+        if type_before_parametrizations(mod) == LinearReLU:
+            mod = mod[0]
+
+        qconfig = mod.qconfig
+        qat_linear = cls(mod.in_features, mod.out_features, bias=mod.bias is not None, qconfig=qconfig)
+
+        if is_parametrized(mod, "weight"):
+            transfer_parametrizations_and_params(mod, qat_linear, "weight")
+        else:
+            qat_linear.weight = mod.weight
+
+        if is_parametrized(mod, "bias"):
+            transfer_parametrizations_and_params(mod, qat_linear, "bias")
+        else:
+            qat_linear.bias = mod.bias
+
+        return qat_linear
+
+    def to_float(self):
+        linear = torch.nn.Linear(self.in_features, self.out_features, self.bias is not None)
+        linear.weight = torch.nn.Parameter(self.weight.detach())
+        if self.bias is not None:
+            linear.bias = torch.nn.Parameter(self.bias.detach())
+        linear.train(self.training)
+        return linear
+```
 
 
 ## QAT (tensorflow)
@@ -1220,5 +1339,3 @@ def quantize_model(to_quantize: tf.keras.Model):
     annotated_model = tf.keras.models.clone_model(to_annotate, input_tensors=None, clone_function=_add_quant_wrapper)
     return quantize_apply(annotated_model)
 ```
-
-## QAT (pytorch)
