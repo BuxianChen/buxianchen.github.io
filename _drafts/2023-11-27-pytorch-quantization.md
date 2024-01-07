@@ -582,6 +582,26 @@ torch.nn.modules.rnn.LSTM         torch.nn.modules.rnn.LSTM                torch
 <placeholder>                     torch.ao.quantization.stubs.DeQuantStub  torch.ao.quantization.stubs.DeQuantStub         torch.ao.quantization.stubs.DeQuantStub                    torch.ao.nn.quantized.modules.DeQuantize
 ```
 
+下面几节将深入各类量化方法的细节, 大体思路如下:
+
+Dynamic Quantization:
+  - 用法 (OK)
+  - 量化后的 Linear 层是怎样运算的 (OK)
+  - 量化后的 ReLU 层是怎样运算的 (TODO)
+  - 量化后的 fusion 层是怎样运算的 (TODO)
+Static Quantization:
+  - 用法 (OK)
+  - 量化后的 Linear 层是怎样运算的 (OK)
+  - 量化后的 ReLU 层是怎样运算的 (TODO)
+  - 量化后的 fusion 层是怎样运算的 (TODO)
+QAT:
+  - 用法 (TODO)
+  - `prepare_qat` 与训练阶段的运算逻辑 (TODO)
+
+备注: QAT 的推理逻辑与 Static Quantization 相同, 无需赘述
+
+备注: 以下章节的基本原理读者直接参考[A7](https://leimao.github.io/article/Neural-Networks-Quantization/), 笔者更侧重于对齐 Pytorch: 手工实现来验证理解的准确性, 但比较混乱, 且内容不如[A7](https://leimao.github.io/article/Neural-Networks-Quantization/) 完善. 因此读者可跳过以下所有内容, 直接阅读[A7](https://leimao.github.io/article/Neural-Networks-Quantization/) 即可
+
 
 ## (Alpha) Dynamic Quantization
 
@@ -1260,6 +1280,90 @@ def swap_module(mod, mapping, custom_module_class_mapping):
             if device:
                 new_mod.to(device)
     return new_mod
+```
+
+
+### after `convert`: `torch.ao.nn.quantized.modules.linear.Linear` 深入分析
+
+与上一节类似, 这里给出 python 的对齐实现
+
+```python
+import torch
+import torch.nn as nn
+from torch.ao.quantization import QuantWrapper
+
+calibration_batch_size, test_batch_size, in_features, out_features = 10, 20, 30, 40
+
+# PART 1: 使用上层 API 进行静态量化
+layer = nn.Linear(in_features, out_features)
+wrapped_float32_model = QuantWrapper(layer)  # children: "quant", "dequant", "module"
+
+wrapped_float32_model.eval()
+wrapped_float32_model.qconfig = torch.ao.quantization.get_default_qconfig('x86')
+
+# prepare model: 添加 observer
+fused_float32_prepared_fp32_model = torch.ao.quantization.prepare(wrapped_float32_model)
+
+# 送入校准数据使得 observer 观测到每一层激活值的分布
+input_fp32 = torch.randn(calibration_batch_size, in_features)
+fused_float32_prepared_fp32_model(input_fp32)
+
+# 根据 observer 确定激活值的量化参数, 并量化模型本身的权重
+static_quantized_int8_model = torch.ao.quantization.convert(fused_float32_prepared_fp32_model)
+
+# PART 2: 量化后的模型推理
+y = torch.randn(test_batch_size, in_features)
+gt_out = static_quantized_int8_model(y)
+
+
+# PART 3: 手工 check 各个环节
+observer = qconfig.activation()  # HistogramObserver(dtype=torch.quint8, qscheme=torch.per_tensor_affine, reduce_range=True, bins=2048, upsample_rate=128)
+observer(input_fp32)
+scale, zero_point = observer.calculate_qparams()
+# TODO: assert scale == gt_scale and zero_point
+# gt_scale, gt_zero_point = static_quantized_int8_model.quant.scale, static_quantized_int8_model.quant.zero_point
+qy = torch.quantize_per_tensor(y, float(scale), int(zero_point), observer.dtype)  # static_quantized_int8_model.quant 的 forward
+
+w_observer = qconfig.weight()  # PerChannelMinMaxObserver(ch_axis=0, dtype=torch.quint8, qscheme=torch.per_channel_affine, reduce_range=False)
+w_observer(layer.weight)
+w_scale, w_zero_point = w_observer.calculate_qparams()  # w_scale: (out_features,), w_zero_point: (out_features, )
+# TODO: assert w_scale == gt_w_scale and w_zero_point == gt_w_zero_point
+# gt_qweight, gt_bias = torch.ops.quantized.linear_unpack(static_quantized_int8_model.module._packed_params._packed_params)
+# gt_w_scale, gt_w_zero_point = gt_qweight.q_per_channel_scales(), gt_qweight.q_per_channel_zero_points()
+
+out_scale, out_zero_point = fused_float32_prepared_fp32_model.module.activation_post_process.calculate_qparams()
+# 两者一样:
+# out_scale, out_zero_point = static_quantized_int8_model.module.scale, static_quantized_int8_model.module.zero_point
+
+# aten/src/ATen/native/quantized/library.cpp
+# m.def(TORCH_SELECTIVE_SCHEMA("quantized::linear(Tensor X, __torch__.torch.classes.quantized.LinearPackedParamsBase W_prepack, float Y_scale_i, int Y_zero_point_i) -> Tensor Y"));
+# qy: quantized tensor, out_scale: float, out_zero_point: int64
+out = torch.ops.quantized.linear(qy, static_quantized_int8_model.module._packed_params._packed_params, out_scale, out_zero_point)  # static_quantized_int8_model.module 的 forward
+# 解开 torch.ops.quantized.linear 的内部细节
+def manual_static_quantized_linear(qx, packed_params, out_scale: float, out_zero_point: int):
+    w, bias = torch.ops.quantized.linear_unpack(packed_params)
+    x_s, x_z = qx.q_scale(), qx.q_zero_point()  # 不适用于 per_channel
+    w_s, w_z = w.q_per_channel_scales(), w.q_per_channel_zero_points()  # w_s: float64
+
+    # x @ w.T: (B, in) x (in, out)
+    w_int = w.int_repr().long()
+    x_int = qx.int_repr().long()
+
+    # out_float = x @ w.T = x_s * (x_int - x_z) * (w_int.T - w_z) @ diag(w_s)  # w_s 和 w_z 是向量
+    # out_float = out_scale * (out_int - out_zero_point)
+    print(w_int.T.shape, w_z.shape, bias.shape, x_s, w_s)
+
+    # 此处不是太确定累积类型是用 float32 还是 float64
+    out_float = ((x_int - x_z) @ ((w_int.T) - w_z)).double() @ (x_s * torch.diag(w_s)) + bias
+    q_out = torch.quantize_per_tensor(out_float.float(), out_scale, out_zero_point, dtype=torch.quint8)  # 与 qx.dtype 保持一致?
+    return q_out
+manual_out = torch.ops.quantized.linear(qy, static_quantized_int8_model.module._packed_params._packed_params, out_scale, out_zero_point)
+# 验证 OP 实现
+assert (out.int_repr() - manual_out.int_repr()).abs().sum() == 0
+out = out.dequantize()  # static_quantized_int8_model.dequant 的 forward
+
+# 验证端到端推理无误
+(out - gt_out).abs().max()
 ```
 
 ## QAT (pytorch)
