@@ -5,6 +5,7 @@ date: 2024-01-11 11:10:04 +0800
 labels: [llm]
 ---
 
+默认 Prompt: [https://github.com/run-llama/llama_index/blob/v0.9.30/llama_index/prompts/default_prompts.py](https://github.com/run-llama/llama_index/blob/v0.9.30/llama_index/prompts/default_prompts.py)
 
 **总体**
 
@@ -37,7 +38,27 @@ chat_engine: ChatEngine = index.as_chat_engine()
 chat_engine.chat("2+2")
 ```
 
-**Document**
+**Demo 1**
+
+完整内容参见 [https://github.com/BuxianChen/snippet/tree/master/llama_index/storage_context_example](https://github.com/BuxianChen/snippet/tree/master/llama_index/storage_context_example)
+
+```python
+import os
+os.environ["OPENAI_API_KEY"] = "sk-xxx"
+from llama_index import SimpleDirectoryReader
+documents = SimpleDirectoryReader("./txt_data").load_data()
+from llama_index import VectorStoreIndex
+index = VectorStoreIndex.from_documents(documents)
+print(index.to_dict())
+```
+
+```python
+storage_context = index.storage_context
+storage_context.vector_store._data  # SimpleVectorStore 特有方法, 返回所有向量
+storage_context.vector_store.get('ef34824e-ae70-4a7e-a12d-a6092cdfe6ff')  # 返回 embeding 向量: 长度为 1536 个浮点数的列表
+```
+
+**Node, TextNode, Document**
 
 基本上就是带一些验证逻辑的 `pydantic.v1.BaseModel`, 用了几层的继承: `pydantic.v1.BaseModel` -> `BaseComponent` -> `BaseNode` -> `TextNode` -> `Document`, 这里只简单看下字段
 
@@ -51,7 +72,7 @@ excluded_embed_metadata_keys: List[str] = Field(default_factory=list, descriptio
 excluded_llm_metadata_keys: List[str] = Field(default_factory=list, description="Metadata keys that are excluded from text for the LLM.",)
 relationships: Dict[NodeRelationship, RelatedNodeType] = Field(default_factory=dict, description="A mapping of relationships to other node information.",)
 hash: str = Field(default="", description="Hash of the node content.")
-# TextNode:
+# TextNode (Node = TextNode)
 text: str = Field(default="", description="Text content of the node.")
 start_char_idx: Optional[int] = Field(default=None, description="Start char index of the node.")
 end_char_idx: Optional[int] = Field(default=None, description="End char index of the node.")
@@ -62,6 +83,66 @@ metadata_seperator: str = Field(default="\n", description="Separator between met
 id_: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique ID of the node.", alias="doc_id",)
 _compat_fields = {"doc_id": "id_", "extra_info": "metadata"}
 ```
+
+`metadata` 用于存储元信息, 例如使用 `documents = SimpleDirectoryReader("./data").load_data()` 时, 返回的每一个 `Document` 会包含文件位置, 文件大小, 创建时间等元信息
+
+```python
+text_template = "{metadata_str}\n\n{content}"  # DEFAULT_TEXT_NODE_TMPL
+metadata_template = "{key}: {value}"           # DEFAULT_METADATA_TMPL
+metadata_seperator = "\n"
+
+class MetadataMode(str, Enum):
+    ALL = auto()
+    EMBED = auto()
+    LLM = auto()
+    NONE = auto()
+
+# Document.get_content 函数的主体内容
+# 与 MetadataMode 有关, 如果是 ALL, 则会使用所有的 matadata, 如果是 EMBED, 则不使用 excluded_embed_metadata_keys, 如果是 None, 则 metadata_str 为空字符串
+matadata_str = "\n".join([metadata_template.format(key=key, value=str(value)) for key, value in self.metadata])
+content = text_template.format(metadata_str=metadata_str, content=self.text) if metadata else self.text
+```
+
+`relationships` 字段适用于后续从 `Document` 中分割出 `Node`, 用于表示节点与节点间的关系
+
+```python
+class NodeRelationship(str, Enum):
+    SOURCE = auto()    # "1", NodeRelationship.SOURCE == "1"
+    PREVIOUS = auto()  # "2"
+    NEXT = auto()      # "3"
+    PARENT = auto()    # "4"
+    CHILD = auto()     # "5"
+
+class RelatedNodeInfo(BaseComponent):
+    node_id: str
+    node_type: Optional[ObjectType] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    hash: Optional[str] = None
+
+    @classmethod
+    def class_name(cls) -> str:
+        return "RelatedNodeInfo"
+
+RelatedNodeType = Union[RelatedNodeInfo, List[RelatedNodeInfo]]
+
+relationships = {
+    NodeRelationship.SOURCE: RelatedNodeInfo(...),       # 来源只能有一个
+    NodeRelationship.PREVIOUS: RelatedNodeInfo(...),     # 在原始文本的前一个 chunk 
+    NodeRelationship.NEXT: RelatedNodeInfo(...),         # 在原始文本的后一个 chunk 
+    NodeRelationship.PARENT: RelatedNodeInfo(...),       # 父节点只能有一个, 什么是父节点?
+    NodeRelationship.CHILD: [RelatedNodeInfo(...), ...]  # 子节点可以有若干个, 什么是子节点?
+}
+
+@property
+BaseNode.[source_node,previous_node,next_node,parent_node,child_nodes]
+```
+
+**Store**
+
+- `BaseDocumentStore`: `SimpleDocumentStore`
+- `BaseIndexStore`: `SimpleIndexStore`
+- `VectorStore`: `SimpleVectorStore`
+- `GraphStore`: `SimpleGraphStore`
 
 
 
