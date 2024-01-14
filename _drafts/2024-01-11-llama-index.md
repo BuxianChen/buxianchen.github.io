@@ -9,7 +9,15 @@ labels: [llm]
 
 **总体**
 
-一个伪代码例子
+LLM 的继承关系主要是: `BaseLLM` -> `LLM` -> `OpenAI`, 主要方法是 `chat`, `complete` (以及对应的 stream/async 方法), 而 `predict` (以及 `stream` 和对应的 async 方法) 方法实际上是根据 `self.metadata.is_chat_model` 的取值回归到 `chat` 或 `complete` 上来, 而 `chat` 与 `complete` 就只是分别对应 ChatCompletion 和 Completion 的 OpenAI API 接口.
+
+PromptTemplate 的继承关系主要是: `BasePromptTemplate` -> `PromptTemplate`, `ChatPromptTemplate`, `SelectorPromptTemplate`, `LangchainPromptTemplate`, 其中最主要的方法是:
+- `get_template`: 返回 str 类型, 用于查看 prompt
+- `format`: 返回 str 类型, 用于将输入数据及 prompt 模板转换为送入 CompletionLLM 的输入
+- `format_messages`: 返回 str 类型, 用于将输入数据及 prompt 模板转换为送入 ChatLLM 的输入
+
+
+一个伪代码例子(尽可能牵涉到重点 class)
 
 ```python
 store1 = Store1(...)
@@ -38,7 +46,17 @@ chat_engine: ChatEngine = index.as_chat_engine()
 chat_engine.chat("2+2")
 ```
 
-**Demo 1**
+**ServiceContext (TODO)**
+
+**StorageContext**
+
+![](../assets/figures/llama_index/storage_context.png)
+
+**Index**
+
+![](../assets/figures/llama_index/index_and_engine.png)
+
+**Demo 1: 探索 storage context**
 
 完整内容参见 [https://github.com/BuxianChen/snippet/tree/master/llama_index/storage_context_example](https://github.com/BuxianChen/snippet/tree/master/llama_index/storage_context_example)
 
