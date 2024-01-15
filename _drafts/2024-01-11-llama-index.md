@@ -371,3 +371,56 @@ class ServiceContext:
 ```
 
 **KnowledgeGraphIndex**
+
+
+## 存疑内容
+
+```python
+# llama_index==0.9.16
+from llama_index import StorageContext, ServiceContext
+from llama_index import VectorStoreIndex
+
+persist_dir = "./index"
+origin_dir = "./data"
+if os.path.exists(persist_dir):  # 怎样搞?
+    document = []
+    storage_context = StorageContext.from_defaults(persist_dir=persist_dir)
+
+    # Method 1:
+    # Error: storage_context.vector_store.stores_text is False
+    VectorStoreIndex.from_vector_store(
+        vector_store=storage_context.vector_store,
+        service_context=service_context
+    )
+    index.storage_context = storage_context
+
+    # Method 2:
+    # Error: No documnet
+    VectorStoreIndex.from_document(
+        document = [],
+        service_context=service_context,
+        storage_context=storage_context
+    )
+
+    # Method 3:
+    # Error: storage_context.index_store.index_structs() is a list
+    VectorStoreIndex(
+        index_struct = storage_context.index_store.get_index_struct('index_store/data'),
+        service_context=service_context,
+        storage_context=storage_context
+    )
+else:
+    # OK
+    documents = SimpleDirectoryReader(origin_dir).load_data()  # List[Document]
+    storage_context = StorageContext.from_defaults()
+    index = from_document(
+        documents = documents,
+        service_context=service_context,
+        storage_context=storage_context
+    )
+
+# 只能转换为 retriver, 参考以下作为 query retriever, 待研究
+# https://docs.llamaindex.ai/en/stable/understanding/querying/querying.html
+retriever = index.as_retriever()
+retriever.retrieve("xxx")
+```

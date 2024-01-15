@@ -4,6 +4,23 @@ title: "(P1) Langchain"
 date: 2023-11-22 11:10:04 +0800
 ---
 
+## 涉及内容
+
+`langchain >= 0.1.0`: [langchain blog (2024/01/08)](https://blog.langchain.dev/langchain-v0-1-0/)
+
+
+```
+libs/
+  - langchain/
+  - core/langchain_core/                  # 关键抽象, 尽量少包含三方库
+  - community/langchain_community/        # ??
+  - partners/
+    - openai/langchain_openai/            # 集成组件, 一般是对三方库的简单包装
+    - anthropic/langchain_anthropic/
+  - cli/langchain_cli/
+  - experimental/langchain_experimental/  # ?? 实验组件, 可忽略?
+```
+
 ## Tutorial
 
 Langchain 的本质就是以一种作者认为的模块化的方式进行提示工程.
