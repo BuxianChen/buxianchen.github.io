@@ -7,6 +7,10 @@ labels: [llm]
 
 默认 Prompt: [https://github.com/run-llama/llama_index/blob/v0.9.30/llama_index/prompts/default_prompts.py](https://github.com/run-llama/llama_index/blob/v0.9.30/llama_index/prompts/default_prompts.py)
 
+**目录结构**
+
+TODO: 子目录非常多, 但层数不深, 慢慢补全
+
 **总体**
 
 LLM 的继承关系主要是: `BaseLLM` -> `LLM` -> `OpenAI`, 主要方法是 `chat`, `complete` (以及对应的 stream/async 方法), 而 `predict` (以及 `stream` 和对应的 async 方法) 方法实际上是根据 `self.metadata.is_chat_model` 的取值回归到 `chat` 或 `complete` 上来, 而 `chat` 与 `complete` 就只是分别对应 ChatCompletion 和 Completion 的 OpenAI API 接口.
@@ -50,9 +54,13 @@ chat_engine.chat("2+2")
 
 **StorageContext**
 
+TODO: BaseKVStore 还包含 IndexStruct, 待加上
+
 ![](../assets/figures/llama_index/storage_context.png)
 
 **Index**
+
+TODO: `index.as_chat_engine()` 的返回结果也可能会是 `BaseAgent`, `BaseAgent` 同时继承自 `BaseChatEngine` 和 `BaseQueryEngine`
 
 ![](../assets/figures/llama_index/index_and_engine.png)
 
@@ -403,10 +411,10 @@ if os.path.exists(persist_dir):
         storage_context=storage_context
     )
 
-    # Method 3:
-    # Error: storage_context.index_store.index_structs() is a list
+    # Method 3: OK
+    # 跟 Method 4 一致: storage_context.index_store.index_structs() is a list
     index = VectorStoreIndex(
-        index_struct = storage_context.index_store.get_index_struct('index_store/data'),
+        index_struct = storage_context.index_store.get_index_struct(),
         service_context=service_context,
         storage_context=storage_context
     )
@@ -427,4 +435,102 @@ else:
 # https://docs.llamaindex.ai/en/stable/understanding/querying/querying.html
 retriever = index.as_retriever()
 retriever.retrieve("xxx")
+```
+
+
+内部细节:
+
+- `load_index_from_storage` 的本质是使用 `storage_context.index_store` 获取其内部的 `IndexStruct` 构造函数所需的参数, 从而先构造出 `IndexStruct`, 然后再用这个 `IndexStruct` 构造出 `IndexStore`
+- `IndexStore` 包含 `KVStore`, `KVStore` 又包含 `IndexStruct`
+
+
+```python
+def load_index_from_storage(storage_context, ...):
+    indices = load_indices_from_storage(...)
+    assert len(indices) == 0
+    return indices[0]
+
+def load_indices_from_storage(storage_context, index_ids=None, **kwargs):
+    if index_ids is None:
+        index_structs = storage_context.index_store.index_structs()
+    else:
+        index_structs = [storage_context.index_store.get_index_struct(index_id) for index_id in index_ids]
+    indices = []
+    for index_struct in index_structs:
+        # type_: IndexStructType.VECTOR_STORE, 即字符串 "vector_store"
+        type_ = index_struct.get_type()   # index_struct: IndexDict
+        index_cls = llama_index.indices.registry.INDEX_STRUCT_TYPE_TO_INDEX_CLASS[type_]  # index_cls: VectorStoreIndex
+        index = index_cls(
+            index_struct=index_struct, storage_context=storage_context, **kwargs
+        )
+        indices.append(index)
+    return indices
+
+def json_to_index_struct(struc_dict):
+    type = struct_dict["__type__"]       # type 是 llama_index.data_structs.data_structs.IndexDict, 继承自 IndexStruct
+    cls = llama_index.index_structs.registry.INDEX_STRUCT_TYPE_TO_INDEX_STRUCT_CLASS[type]
+    data_dict = struct_dict["__data__"]  # 实际上是 str
+    return cls.from_json(data_dict)      # `from_json` 是 from json dict str, 这个构造方法只是普通的变量赋值
+
+class KVIndexStore(BaseIndexStore):  # SimpleIndexStore 继承自 KVIndexStore
+    def index_structs(self):
+        # self._kvstore 是 SimpleKVStore, 它简单来说是一个字典 (这个字典实际上保存在 self._kvstore._data 中)
+        # {"collection_id": {"struct_id": {"__type__": "vector_store", "__data__": "{...}"}}}
+        # 一个 collection 有一个或多个 index_struct
+        jsons = self._kvstore.get_all(collection=self._collection)
+        return [json_to_index_struct(json) for json in json.values()]
+    def index_struct(self, struct_id):
+        json = self._kvstore.get(struct_id, collection=self._collection)
+        return json_to_index_struct(json)
+```
+
+**可视化**
+
+- Simple: 打印
+- DeepEval: 似乎需要登录
+- Weights and Biases Prompts: 似乎需要登录
+- OpenLLMetry: 需要登录
+- Arize Phoenix: 可以本地部署
+- OpenInference: ??
+- TruEra TruLens: ??
+- HoneyHive: ??
+- PromptLayer: ??
+
+**ResponseMode**
+
+`index.as_query_engine()` 或 `index.as_chat_engine()` 时实际上会默认设置这个
+
+`llama_index.response_synthesizeers.type.PesponseMode`, `llama_index.get_response_synthesize`
+
+```python
+# get_response_synthesize 实现里可以看出这种对应关系, 位于 llama_index/response_synthesize
+modes = [
+    "refine",            # Refine
+    "compact",           # CompactAndRefine
+    "simple_summarize",  # SimpleSummarize
+    "tree_summarize",    # TreeSummarize
+    "generation",        # Generation
+    "no_text",           # CompactAndAccumulate
+    "accumulate"         # Accumulate
+    "compact_accumulate" # NoText
+]
+```
+
+**ChatMode**
+
+`index.as_chat_engine()` 时会设置这个
+
+`llama_index.chat_engine.types.ChatMode`
+
+```python
+# BaseIndex.as_chat_engine 的实现可以看出这种对应关系: llama_index/agent/*.py, llama_index/chat_engine/*.py
+modes = [
+    "simple",                 # SimpleChatEngine
+    "condense_question",      # CondenseQuestionChatEngine
+    "context",                # ContextChatEngine
+    "condense_plus_context",  # CondensePlusContextChatEngine
+    "react",                  # ReActAgent
+    "openai",                 # OpenAIAgent, 适用于支持 function_call 的模型, 大部分大模型不支持
+    "best",                   # 自动决定, 但只会回落到 react 和 openai, 这说明官方觉得用 react 比较 OK?
+]
 ```
