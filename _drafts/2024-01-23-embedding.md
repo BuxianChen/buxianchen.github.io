@@ -5,6 +5,12 @@ date: 2024-01-23 11:10:04 +0800
 labels: [llm]
 ---
 
+## 动机、参考资料、涉及内容
+
+一些可用的 Embedding 模型与 ReRanking 模型使用及注意事项
+
+## 可用模型
+
 ### OpenAI
 
 TL;DR: 目前只需要关注一个模型 `text-embedding-ada-002` 即可, 用例参考以下
