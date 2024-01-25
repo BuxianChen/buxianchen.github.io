@@ -9,6 +9,11 @@ labels: [llm]
 
 一些关于大模型 Prompt, RAG, Agent (工具使用) 的用例记录
 
+## 资源汇总
+
+- langchainhub: [https://smith.langchain.com/hub](https://smith.langchain.com/hub)
+- langchain/template: 一些使用 langchain 的 example, [https://github.com/langchain-ai/langchain/tree/master/templates](https://github.com/langchain-ai/langchain/tree/master/templates)
+
 ## reciprocal rerank fusion: 多个检索结果整合
 
 - llama_index: [https://docs.llamaindex.ai/en/stable/examples/retrievers/reciprocal_rerank_fusion.html](https://docs.llamaindex.ai/en/stable/examples/retrievers/reciprocal_rerank_fusion.html)
