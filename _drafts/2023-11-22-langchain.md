@@ -70,6 +70,8 @@ LLM/Chat Model 的一个实际例子是 `ChatOpenAI` 类, Prompt Template 的一
 
 ### 例子1 (llm, prompt, output parser, LCEL basics)
 
+参考自: [https://python.langchain.com/docs/get_started/quickstart#llm-chain](https://python.langchain.com/docs/get_started/quickstart#llm-chain)
+
 ```python
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -162,16 +164,22 @@ if __name__ == "__main__":
 
 ### 例子 3 (index, RAG)
 
+参考自: [https://python.langchain.com/docs/get_started/quickstart#retrieval-chain](https://python.langchain.com/docs/get_started/quickstart#retrieval-chain)
+
 **PART 1**
 
 ```python
 # pip install beautifulsoup4 faiss-cpu
+from langchain_openai import OpenAIEmbeddings
+from langchain_openai import ChatOpenAI
+embeddings = OpenAIEmbeddings()
+llm = ChatOpenAI()
+
 from langchain_core.documents.base import Document
 from typing import List
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-
 loader = WebBaseLoader("https://docs.smith.langchain.com/overview")
 # Document has two attrs: page_content: str, metadata: Dict
 docs: List[Document] = loader.load()  # metadata keys: ['source', 'title', 'description', 'language']
@@ -202,6 +210,7 @@ langchain_community.docstores.in_memory.InMemoryDocstore(Docstore, AddableMixin)
 # pip install grandalf
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
+import langchain_core
 
 prompt = ChatPromptTemplate.from_template("""Answer the following question based only on the provided context:
 
@@ -306,11 +315,210 @@ retrieval_chain: langchain_core.runnables.base.RunnableBinding = create_retrieva
 response = retrieval_chain.invoke({"input": "how can langsmith help with testing?"})
 print(response["answer"])
 # "LangSmith can help with testing by providing various features ..."
+print(retrieval_chain.get_graph().draw_ascii())
+```
+
+图示
+
+```
+                               +------------------------+                            
+                               | Parallel<context>Input |                            
+                               +------------------------+                            
+                                ***                   ***                            
+                            ****                         ***                         
+                          **                                ****                     
+       +------------------------------+                         **                   
+       | Lambda(lambda x: x['input']) |                          *                   
+       +------------------------------+                          *                   
+                       *                                         *                   
+                       *                                         *                   
+                       *                                         *                   
+           +----------------------+                       +-------------+            
+           | VectorStoreRetriever |                       | Passthrough |            
+           +----------------------+                      *+-------------+            
+                                ***                   ***                            
+                                   ****           ****                               
+                                       **       **                                   
+                              +-------------------------+                            
+                              | Parallel<context>Output |                            
+                              +-------------------------+                            
+                                            *                                        
+                                            *                                        
+                                            *                                        
+                                +-----------------------+                            
+                                | Parallel<answer>Input |                            
+                                +-----------------------+*                           
+                                 ****                     *****                      
+                              ***                              *****                 
+                            **                                      ******           
+           +------------------------+                                     ***        
+           | Parallel<context>Input |                                       *        
+           +------------------------+                                       *        
+                ***            ***                                          *        
+              **                  **                                        *        
+            **                      **                                      *        
++----------------+              +-------------+                             *        
+| PromptTemplate |              | Passthrough |                             *        
++----------------+              +-------------+                             *        
+                ***            ***                                          *        
+                   **        **                                             *        
+                     **    **                                               *        
+           +-------------------------+                                      *        
+           | Parallel<context>Output |                                      *        
+           +-------------------------+                                      *        
+                        *                                                   *        
+                        *                                                   *        
+                        *                                                   *        
+             +--------------------+                                         *        
+             | ChatPromptTemplate |                                         *        
+             +--------------------+                                         *        
+                        *                                                   *        
+                        *                                                   *        
+                        *                                                   *        
+                 +------------+                                             *        
+                 | ChatOpenAI |                                             *        
+                 +------------+                                             *        
+                        *                                                   *        
+                        *                                                   *        
+                        *                                                   *        
+               +-----------------+                                  +-------------+  
+               | StrOutputParser |                                  | Passthrough |  
+               +-----------------+                             *****+-------------+  
+                                 ****                     *****                      
+                                     ***            ******                           
+                                        **       ***                                 
+                               +------------------------+                            
+                               | Parallel<answer>Output |                            
+                               +------------------------+                            
+```
+
+### 例子 4 (langchainhub)
+
+```python
+from langchain import hub
+prompt = hub.pull("hwchase17/openai-functions-agent")
+
+import pickle
+with open("openai-functions-agent.pkl", "wb") as fw:
+    pickle.dump(prompt, fw)
+
+import pickle
+with open("openai-functions-agent.pkl", "rb") as fr:
+    reload_prompt = pickle.load(fr)
+```
+
+### 例子 5 (async & stream)
+
+**Python 脚本中**
+
+```python
+from langchain.chat_models import ChatOpenAI
+import asyncio
+
+async def main():
+    model = ChatOpenAI()
+
+    chunks = []
+    async for chunk in model.astream("hello. tell me something about yourself"):
+        chunks.append(chunk)
+        print(chunk.content, end="|", flush=True)
+
+asyncio.run(main())
+# 基本等价于:
+# asyncio.get_event_loop().run_until_complete(main())
+```
+
+**Jupyter 环境**
+
+jupyter 环境里可以直接将 `async` 关键字写在外层
+
+```python
+from langchain.chat_models import ChatOpenAI
+model = ChatOpenAI()
+
+chunks = []
+async for chunk in model.astream("hello. tell me something about yourself"):
+    chunks.append(chunk)
+    print(chunk.content, end="|", flush=True)
+```
+
+### 例子 6 (callbacks, TODO: 待解释)
+
+参考: [https://python.langchain.com/docs/expression_language/how_to/functions#accepting-a-runnable-config](https://python.langchain.com/docs/expression_language/how_to/functions#accepting-a-runnable-config)
+
+```python
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnableConfig, RunnableLambda
+
+import json
+
+
+def parse_or_fix(text: str, config: RunnableConfig):
+    fixing_chain = (
+        ChatPromptTemplate.from_template(
+            "Fix the following text:\n\n```text\n{input}\n```\nError: {error}"
+            " Don't narrate, just respond with the fixed data."
+        )
+        | ChatOpenAI()
+        | StrOutputParser()
+    )
+    for _ in range(3):
+        try:
+            return json.loads(text)
+        except Exception as e:
+            text = fixing_chain.invoke({"input": text, "error": e}, config)
+    return "Failed to parse"
+
+from langchain.callbacks import get_openai_callback
+
+with get_openai_callback() as cb:
+    output = RunnableLambda(parse_or_fix).invoke(
+        "{foo: bar}", {"tags": ["my-tag"], "callbacks": [cb]}
+    )
+    print(output)
+    print(cb)
+```
+
+输出:
+
+```
+{'foo': 'bar'}
+Tokens Used: 65
+	Prompt Tokens: 56
+	Completion Tokens: 9
+Successful Requests: 1
+Total Cost (USD): $0.00010200000000000001
 ```
 
 ## Cookbook
 
 ### ConversationalRetrievalChain (TODO)
+
+## Code
+
+**Runnable**
+
+```python
+# langchain_openai.chat_models.base.ChatOpenAI: public class
+class ChatOpenAI(BaseChatModel):
+    def _stream(...): ...
+    def _generate(...): ...
+    async def _astream(...): ...
+    async def _agenerate(...): ...
+
+class BaseChatModel(BaseLanguageModel[BaseMessage], ABC):
+    # invoke, ainvoke, stream, astream, generate, agenerate, generate_prompt, agenerate_prompt
+
+class BaseLanguageModel(RunnableSerializable[LanguageModelInput, LanguageModelOutputVar], ABC):
+    # @abstractmethod: generate_prompt, agenerate_prompt
+
+class RunnableSerializable(Serializable, Runnable[Input, Output]):
+    # configurable_fields, configurable_alternatives
+
+class Runnable:
+    # 包含对外接口: invoke, ainvoke, stream, astream, batch, abatch, astream_log, astream_events
+    # 参考文档: https://python.langchain.com/docs/expression_language/interface
+```
 
 ## LangSmith
 
