@@ -490,13 +490,111 @@ Successful Requests: 1
 Total Cost (USD): $0.00010200000000000001
 ```
 
+### 例子 7 (memory, redis)
+
+参考: [https://python.langchain.com/docs/expression_language/how_to/message_history](https://python.langchain.com/docs/expression_language/how_to/message_history)
+
+
+```python
+from typing import Optional
+
+from langchain_community.chat_message_histories import RedisChatMessageHistory
+from langchain_community.chat_models import ChatOpenAI
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables.history import RunnableWithMessageHistory
+
+REDIS_URL = "redis://localhost:6379/0"
+
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", "You're an assistant who's good at {ability}"),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{question}"),
+    ]
+)
+
+chain = prompt | ChatOpenAI()
+
+chain_with_history = RunnableWithMessageHistory(
+    chain,
+    lambda session_id: RedisChatMessageHistory(session_id, url=REDIS_URL, ttl=600),  # 设置失效时间为 600 秒
+    input_messages_key="question",
+    history_messages_key="history",
+)
+
+chain_with_history.invoke(
+    {"ability": "math", "question": "What does cosine mean?"},
+    config={"configurable": {"session_id": "foobar"}},
+)
+
+# 可以尝试直接调 chain, 不会写 history
+# messages = chain_with_history.get_session_history("foobar").messages
+# chain.invoke(
+#     {
+#         "ability": "math",
+#         "question": "What's its inverse",
+#         "history": chain_with_history.get_session_history("foobar").messages  # List[BaseMessage]
+#     }
+# )
+
+chain_with_history.invoke(
+    {"ability": "math", "question": "What's its inverse"},
+    config={"configurable": {"session_id": "foobar"}},
+)
+```
+
+
+备注: 这个例子里 redis 侧实际发生的事情如下: langchain 的实现是用 `lpush/lrange` 来存储/获取键值对, 而不是使用 `set/get` 的方式
+
+```python
+# docker run -d -p 6379:6379 -p 8001:8001 redis/redis-stack:latest
+import redis
+import json
+from langchain_core.messages import messages_from_dict, message_to_dict
+from langchain_core.messages import HumanMessage, AIMessage
+
+REDIS_URL = "redis://localhost:6379/0"
+redis_client = redis.from_url(url=REDIS_URL)
+
+prefix = "message_store:"
+session_id = "foobar"
+
+# 追加历史:
+message = HumanMessage(content='What does cosine mean?')
+redis_client.lpush(prefix+session_id, json.dumps(message_to_dict(message)))
+
+message = AIMessage(content='In mathematics, cosine (abbreviated as cos) is a trigonometric function that relates the angle of a right triangle to the ratio of the length of the adjacent side to the hypotenuse. It is defined as the ratio of the length of the side adjacent to an acute angle in a right triangle to the length of the hypotenuse. The cosine function is commonly used in geometry, physics, and engineering to solve problems related to angles and triangles.')
+redis_client.lpush(prefix+session_id, json.dumps(message_to_dict(message)))
+
+# 获取历史:
+_items = redis_client.lrange(prefix+session_id, 0, -1)
+items = [json.loads(m.decode("utf-8")) for m in _items[::-1]]
+messages = messages_from_dict(items)
+```
+
+**对 memory 的理解**
+
+官方文档中提到大部分出于 Beta 状态, 不是很理解: [https://python.langchain.com/docs/modules/memory/](https://python.langchain.com/docs/modules/memory/)
+
+> Most of memory-related functionality in LangChain is marked as beta. This is for two reasons:
+> - Most functionality (with some exceptions, see below) are not production ready
+> - Most functionality (with some exceptions, see below) work with Legacy chains, not the newer LCEL syntax.
+
+两类 Chain: [https://python.langchain.com/docs/modules/chains](https://python.langchain.com/docs/modules/chains), 这是不是一个比较好的例子?: `create_stuff_documents_chain` vs `StuffDocumentsChain`
+
+- 新类: `ChatMessageHistory` ?
+- 旧类: `ConversationBufferMemory`, `ConversationBufferWindowMemory`, ... TODO
+
+最大的疑问: 什么是 ICEL, 之前是什么?
+
 ## Cookbook
 
 ### ConversationalRetrievalChain (TODO)
 
 ## Code
 
-**Runnable**
+### Runnable (TODO)
 
 ```python
 # langchain_openai.chat_models.base.ChatOpenAI: public class
@@ -519,6 +617,142 @@ class Runnable:
     # 包含对外接口: invoke, ainvoke, stream, astream, batch, abatch, astream_log, astream_events
     # 参考文档: https://python.langchain.com/docs/expression_language/interface
 ```
+
+`langchain_core` 目录下所有以 `"Runnable"` 开头的类
+
+```
+Runnable
+RunnableSerializable
+RunnableSequence
+RunnableParallel
+RunnableLambda
+RunnableEachBase
+RunnableEach
+RunnableBindingBase
+RunnableBinding
+
+RunnableBranch
+
+RunnableConfig
+RunnableConfigurableFields
+RunnableConfigurableAlternatives
+
+RunnableWithFallbacks
+
+RunnableWithMessageHistory
+
+RunnablePassthrough
+RunnableAssign
+RunnablePick
+
+RunnableRetry
+
+RunnableAgent
+RunnableMultiActionAgent
+```
+
+<table>
+<tr>
+    <th>Runnable方法名</th>
+    <th>返回类型(粗略)</th>
+    <th>说明</th>
+    <th>文档链接</th>
+</tr>
+<tr>
+    <td>assign</td>
+    <td>RunnableSerializable: (self | RunnableAssign)</td>
+    <td>添加字段</td>
+    <td>https://python.langchain.com/docs/expression_language/how_to/passthrough</td>
+</tr>
+<tr>
+    <td>pipe</td>
+    <td>RunnableSequence</td>
+    <td></td>
+    <td></td>
+</tr>
+<tr>
+    <td>pick</td>
+    <td>RunnableSerializable: (self | RunnablePick)</td>
+    <td></td>
+    <td></td>
+</tr>
+<tr>
+    <td>bind</td>
+    <td>RunnableBinding</td>
+    <td></td>
+    <td>https://python.langchain.com/docs/expression_language/how_to/binding</td>
+</tr>
+<tr>
+    <td>with_config, configurable_fields, configurable_alternatives</td>
+    <td>RunnableBinding</td>
+    <td></td>
+    <td>https://python.langchain.com/docs/expression_language/how_to/configure</td>
+</tr>
+<tr>
+    <td>with_listeners</td>
+    <td>RunnableBinding</td>
+    <td>用于 RunnableWithMessageHistory</td>
+    <td>https://python.langchain.com/docs/expression_language/how_to/message_history</td>
+</tr>
+<tr>
+    <td>with_types</td>
+    <td>RunnableBinding</td>
+    <td></td>
+    <td></td>
+</tr>
+<tr>
+    <td>with_retry</td>
+    <td>RunnableRetry</td>
+    <td></td>
+    <td></td>
+</tr>
+<tr>
+    <td>map</td>
+    <td>RunnableEach</td>
+    <td></td>
+    <td></td>
+</tr>
+<tr>
+    <td>with_fallbacks</td>
+    <td>RunnableWithFallbacks</td>
+    <td></td>
+    <td></td>
+</tr>
+<table>
+
+### memory
+
+以这个例子为例: [https://python.langchain.com/docs/modules/memory/types/buffer_window](https://python.langchain.com/docs/modules/memory/types/buffer_window)
+
+```python
+from langchain.memory import ConversationBufferWindowMemory
+from langchain_openai import OpenAI
+from langchain.chains import ConversationChain
+conversation_with_summary = ConversationChain(
+    llm=OpenAI(temperature=0),
+    # We set a low k=2, to only keep the last 2 interactions in memory
+    memory=ConversationBufferWindowMemory(k=2),
+    verbose=True
+)
+
+conversation_with_summary.predict(input="Hi, what's up?")
+conversation_with_summary.predict(input="What's their issues?")
+conversation_with_summary.predict(input="Is it going well?")
+conversation_with_summary.predict(input="What's the solution?")
+```
+
+这里稍微展开一下 `ConversationChain.predict` 的逻辑: 首先 `ConversationChain` 应该是属于所谓的 lagacy chains, `predict` 方法应该也会在 langchain 的后续版本完全被 `invoke` 方法取代, 而 `invoke` 方法的主要执行流程为:
+
+```python
+# ConversationChain -> LLMChain -> Chain
+input = {"input": "Hi, what's up?"}
+def invoke(input):
+    inputs = self.prep_inputs(input)  # Chain 中定义
+    outputs = self._call(inputs)      # LLMChain 中定义
+    final_outputs: Dict[str, Any] = self.prep_outputs(inputs, outputs)  # Chain 中定义
+    return final_outputs
+```
+
 
 ## LangSmith
 
