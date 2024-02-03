@@ -745,13 +745,32 @@ conversation_with_summary.predict(input="What's the solution?")
 
 ```python
 # ConversationChain -> LLMChain -> Chain
+# 以下均为大体流程
 input = {"input": "Hi, what's up?"}
-def invoke(input):
+def invoke(self, input):
     inputs = self.prep_inputs(input)  # Chain 中定义
     outputs = self._call(inputs)      # LLMChain 中定义
     final_outputs: Dict[str, Any] = self.prep_outputs(inputs, outputs)  # Chain 中定义
     return final_outputs
+
+def prep_inputs(self, inputs)
+    if self.memory is not None:
+        external_context = self.memory.load_memory_variables(inputs)
+        inputs = dict(inputs, **external_context)
+    return inputs
+
+def prep_outputs(self, inputs, outputs):
+    if self.memory is not None:
+        self.memory.save_context(inputs, outputs)
+    return outputs
+
+def _call(inputs):
+    prompts, stop = self.prep_prompts(input_list, run_manager=run_manager)
+    self.llm.xxx(...)
+    return self.create_outputs(...)
 ```
+
+从上面可以看出, 只需要关注 `load_memory_variables` 和 `save_context` 方法即可 (因为调用来自于 `Chain` 这个父类)
 
 
 ## LangSmith
