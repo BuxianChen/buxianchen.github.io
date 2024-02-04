@@ -490,7 +490,7 @@ Successful Requests: 1
 Total Cost (USD): $0.00010200000000000001
 ```
 
-### 例子 7 (memory, redis)
+### 例子 7 (ICEL Memory, redis, TODO: 与 modules 文档中的 memory 似乎不相干)
 
 参考: [https://python.langchain.com/docs/expression_language/how_to/message_history](https://python.langchain.com/docs/expression_language/how_to/message_history)
 
@@ -573,7 +573,63 @@ items = [json.loads(m.decode("utf-8")) for m in _items[::-1]]
 messages = messages_from_dict(items)
 ```
 
-**对 memory 的理解**
+备注: 可以通过如下方式去掉对 redis 的依赖:
+
+```python
+from langchain_community.chat_message_histories.in_memory import ChatMessageHistory
+message_history = ChatMessageHistory()
+chain_with_history = RunnableWithMessageHistory(
+    chain,
+    lambda session_id: message_history,
+    input_messages_key="question",
+    history_messages_key="history",
+)
+# invoke 之后可以通过这两种方案来看现有的历史
+chain_with_history.get_session_history("foobar").messages  # 通过 chain_with_history 拿到历史的做法
+message_history.messages
+```
+
+## Cookbook
+
+### ConversationalRetrievalChain (TODO)
+
+## Concept
+
+### `Runnable` vs `Chain`
+
+```python
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+
+# llm, prompt, output_parser 都是 Runnable, 是最小单元
+llm = ChatOpenAI()
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are world class technical documentation writer."),
+    ("user", "{input}")
+])
+output_parser = StrOutputParser()
+
+# chain 是 Chain, 其本身也是符合(继承) Runnable 协议的
+chain = prompt | llm | output_parser
+```
+
+`Chain` 分为旧式的和新式的, TODO: 把这个例子的省略号完善
+
+```python
+from langchain.chains.combine_documents.stuff import create_stuff_documents_chain
+from langchain.chains.combine_documents.stuff import StuffDocumentsChain
+
+# 旧式 Chain: 采用继承的方式串接各个 runnable 组件, 继承关系如下
+# StuffDocumentsChain -> BaseCombineDocumentsChain -> Chain -> RunnableSerializable -> (Serializable, Runnable)
+chain = StuffDocumentsChain(...)
+
+# 新式 Chain: 直接用 | 以及 RunnableParallel, RunnablePassThrough 等串接各个 runnable 组件, 内部实现大致如下
+# (RunnablePassthrough.assign(**{DOCUMENTS_KEY: format_docs}).with_config(...) | prompt | llm | _output_parser).with_config(...)
+chain = create_stuff_documents_chain(...)
+```
+
+### Memory
 
 官方文档中提到大部分出于 Beta 状态, 不是很理解: [https://python.langchain.com/docs/modules/memory/](https://python.langchain.com/docs/modules/memory/)
 
@@ -581,20 +637,28 @@ messages = messages_from_dict(items)
 > - Most functionality (with some exceptions, see below) are not production ready
 > - Most functionality (with some exceptions, see below) work with Legacy chains, not the newer LCEL syntax.
 
-两类 Chain: [https://python.langchain.com/docs/modules/chains](https://python.langchain.com/docs/modules/chains), 这是不是一个比较好的例子?: `create_stuff_documents_chain` vs `StuffDocumentsChain`
+- 新类似乎是这里: `BaseChatMessageHistory`, 见[这里](https://python.langchain.com/docs/expression_language/how_to/message_history) 和 [这里](https://python.langchain.com/docs/integrations/memory)
+- 旧类似乎是这里: `ConversationBufferMemory`, `ConversationBufferWindowMemory`, 见[这里](https://python.langchain.com/docs/modules/memory/types/)
 
-- 新类: `ChatMessageHistory` ?
-- 旧类: `ConversationBufferMemory`, `ConversationBufferWindowMemory`, ... TODO
-
-最大的疑问: 什么是 ICEL, 之前是什么?
-
-## Cookbook
-
-### ConversationalRetrievalChain (TODO)
 
 ## Code
 
-### Runnable (TODO)
+### Message
+
+```python
+from langchain_core.messages.base import BaseMessage, BaseMessageChunk
+# 以下都继承自 BaseMessage
+from langchain_core.messages.ai import AIMessage, AIMessageChunk
+from langchain_core.messages.chat import ChatMessage, ChatMessageChunk  # 可以指定角色为任意字符串, 用的不多
+from langchain_core.messages.function import FunctionMessage, FunctionMessageChunk  # 代表用户自行调用函数后得到的结果
+from langchain_core.messages.human import HumanMessage, HumanMessageChunk
+from langchain_core.messages.system import SystemMessage, SystemMessageChunk
+from langchain_core.messages.tool import ToolMessage, ToolMessageChunk  # 代表用户自行调用工具后得到的结果
+```
+
+### Runnable (ICEL) (TODO)
+
+本节内容作为 [https://python.langchain.com/docs/expression_language/](https://python.langchain.com/docs/expression_language/) 的补充与解释
 
 ```python
 # langchain_openai.chat_models.base.ChatOpenAI: public class
@@ -633,7 +697,7 @@ RunnableBinding
 
 RunnableBranch
 
-RunnableConfig
+RunnableConfig  # 仅仅类似一个字典, 不是 runnable
 RunnableConfigurableFields
 RunnableConfigurableAlternatives
 
@@ -720,7 +784,140 @@ RunnableMultiActionAgent
 </tr>
 <table>
 
-### memory
+`RunnableBranch` 看起来是需要直接使用其构造函数的, 参考: [https://python.langchain.com/docs/expression_language/how_to/routing](https://python.langchain.com/docs/expression_language/how_to/routing)
+
+#### Runnable.invoke
+
+```python
+class Runnable:
+    @abstractmethod
+    def invoke(self, input: Input, config: Optional[RunnableConfig] = None) -> Output: ...
+```
+
+#### Runnable.with_config, configurable_fields, configurable_alternatives
+
+参考: [https://python.langchain.com/docs/expression_language/how_to/configure](https://python.langchain.com/docs/expression_language/how_to/configure)
+
+- `configurable_fields` 用于将 Runnable 的一些参数暴露给 `with_config` 或 `invoke` 调节
+- `configurable_alternatives` 用于将 Runnable 串接为 Chain 后, 将某个 Runnable 整个进行替换, 暴露给 `with_config` 或 `invoke` 调节
+
+**模板**
+
+```python
+# 必须先 configurable_fields 或 configurable_alternatives, 再使用 with_config
+runnable = runnable.configurable_fields(...)  # 不同的 runnable 有不同的可设置 key, key 不能乱配
+runnable = runnbale.configurable_alternatives(...)  # 配置可以替换整个runnable为其他runnable
+runnable.with_config(configurable={"foo": 0.9})
+```
+
+**例子**
+
+```python
+from langchain.prompts import PromptTemplate
+runnable = PromptTemplate.from_template("This is history: {history}, This is content: {content}")
+runnable = runnable.configurable_fields(template=ConfigurableField(id="custom_template"))  # "template" in runnable.__fields__.keys()
+runnable.with_config(configurable={"custom_template": "{history} {content}"}).invoke({"history": "1", "content": "2"})
+```
+
+三种在 `invoke` 时设置 config 的做法:
+
+```python
+prompt = PromptTemplate.from_template("Tell me a joke about {topic}").configurable_alternatives(
+    ConfigurableField(id="prompt_choice"),
+    default_key="joke",
+    poem=PromptTemplate.from_template("Write a short poem about {topic}"),
+)
+
+prompt.with_config(config={"configurable": {"prompt_choice": "poem"}}).invoke({"topic": "book"})
+prompt.with_config(configurable={"prompt_choice": "poem"}).invoke({"topic": "book"})
+prompt.invoke({"topic": "book"}, config={"configurable": {"prompt_choice": "poem"}})
+# prompt.invoke({"topic": "book"}, configurable= {"prompt_choice": "poem"})  # ERROR: 不能用 configurable={"prompt_choice": "poem"}
+```
+
+**一个 Chain 的例子**
+
+也可以混合使用 `configurable_fields` 和 `configurable_alternatives`, 参考上面的文档即可
+
+```python
+from langchain.prompts import PromptTemplate
+from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+runnable = PromptTemplate.from_template("This is history: {history}, This is content: {content}")
+runnable2 = PromptTemplate.from_template("context: {context}")
+params = {"history": "1", "content": "2"}
+
+# 必须对每个 runnable 组件设置 configurable_fields, 并且 id 必须不同, 否则会冲突
+runnable = runnable.configurable_fields(template=ConfigurableField(id="custom_template1"))
+runnable2 = runnable2.configurable_fields(template=ConfigurableField(id="custom_template2"))
+
+chain = (runnable | (lambda x: {"context": x.text}) | runnable2)
+
+# 注意对 chain 本身设置 configurable_fields 只能设置 ['name', 'first', 'middle', 'last']
+# chain.configurable_fields(template=ConfigurableField(id="custom_template"))  # ERROR! only support: ['name', 'first', 'middle', 'last']
+chain.with_config(
+    configurable={
+        "custom_template1": "custom_template1 {history} {content}",
+        "custom_template2": "custom_template2 {context}"
+    }
+).invoke(params)
+```
+
+#### RunnableConfig
+
+继承自字典类型, TODO: 具体包含的 key
+
+#### RunnableLambda
+
+参考文档 [https://python.langchain.com/docs/expression_language/how_to/functions](https://python.langchain.com/docs/expression_language/how_to/functions)
+
+```python
+# RunnableLambda 实现的大略逻辑如下
+class RunnableLambda(Runnable[Input, Output]):
+    def __init__(
+        self,
+        func: Union[
+                Callable[[Input], Output],
+                Callable[[Input], Iterator[Output]],
+                Callable[[Input, RunnableConfig], Output],
+                Callable[[Input, CallbackManagerForChainRun], Output],
+                Callable[[Input, CallbackManagerForChainRun, RunnableConfig], Output],
+        ],
+        afunc = None,
+        name: Optional[str] = None,
+    ) -> None:
+        ...
+
+    def _invoke(
+        self,
+        input: Input,
+        run_manager: CallbackManagerForChainRun,
+        config: RunnableConfig,
+        **kwargs: Any,
+    ) -> Output:
+        output = call_func_with_variable_args(
+            self.func, input, config, run_manager, **kwargs
+        )
+        return cast(Output, output)
+```
+
+**例子**
+
+```python
+from langchain_core.runnables import RunnableLambda, RunnableConfig
+
+def func1(x):
+    return x
+
+def func2(x, config: RunnableConfig):
+    return x["num"] + config["configurable"]["total"]
+
+RunnableLambda(func1).invoke({"num": 1})  # {'num': 1}
+RunnableLambda(func2).invoke({"num": 1}, config={"configurable": {"total": 100}})  # 101
+RunnableLambda(func2).invoke({"num": 1}, config={"configurable": {"total": 100}, "foo": 2})  # 也 OK: 101
+```
+
+备注: `RunnableLambda` 没有继承自 `RunnableSerializable` 因此没有 `configurable_fields`, `configurable_alternatives` 方法, 并且 `with_config` 方法也不能设置 `configurable`
+
+### Memory
 
 以这个例子为例: [https://python.langchain.com/docs/modules/memory/types/buffer_window](https://python.langchain.com/docs/modules/memory/types/buffer_window)
 
@@ -772,6 +969,27 @@ def _call(inputs):
 
 从上面可以看出, 只需要关注 `load_memory_variables` 和 `save_context` 方法即可 (因为调用来自于 `Chain` 这个父类)
 
+
+**疑问**: 这里这个例子 [https://python.langchain.com/docs/expression_language/how_to/message_history](https://python.langchain.com/docs/expression_language/how_to/message_history) 是怎么回事 `RunnableWithMessageHistory`? 似乎它与本节的完全独立, 不在一个体系里: 本节的 memory 需要实现 `load_memory_variables` 和 `save_context` 方法, 而 `RunnableWithMessageHistory` 里的 memory 要求实现 `messages` 属性以及 `add_message` 方法
+
+
+### callback (tracing, visibility)
+
+开箱即用的: [https://python.langchain.com/docs/integrations/callbacks](https://python.langchain.com/docs/integrations/callbacks)
+
+- Argilla: feedback 标注, 应该可完全私有化部署, [langchain文档](https://python.langchain.com/docs/integrations/callbacks/argilla), [官网](https://argilla.io/)
+- Comet: tracing, 似乎不可私有部署, [langchain文档](https://python.langchain.com/docs/integrations/callbacks/comet_tracing), [官网](https://www.comet.com/site/)
+- Confident
+- Context
+- Infino
+- Label Studio
+- LLMonitor
+- PromptLayer
+- SageMaker Tracking
+- Streamlit
+- Trubrics
+
+自定义: [https://python.langchain.com/docs/modules/callbacks/](https://python.langchain.com/docs/modules/callbacks/)
 
 ## LangSmith
 

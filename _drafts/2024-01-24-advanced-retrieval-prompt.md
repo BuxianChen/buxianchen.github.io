@@ -51,3 +51,55 @@ reranked_results = reciprocal_rank_fusion(search_results_dict)
 prompt = "Based on the context:\n{context}\nAnswer the question {query}".format(context="\n".join(reranked_results.keys()), query=query)
 answer = llm(prompt)
 ```
+
+## Parent Document Retriever
+
+参考: [https://python.langchain.com/docs/modules/data_connection/retrievers/parent_document_retriever](https://python.langchain.com/docs/modules/data_connection/retrievers/parent_document_retriever)
+
+本质上是先按大粒度切分文档 (parent), 然后再对这些大块的文档继续切分并做 embedding (child), 并保留 child to parent 的映射, 检索时向量相似度在 child 上做, 但返回的文档是 parent 的. 以下为简易实现供参考
+
+```python
+from functools import partial
+from typing import Dict, List
+
+def demo_splitter(doc, chunk_size):
+    n = (len(doc) - 1) // chunk_size + 1
+    return [doc[i*chunk_size: (i+1)*chunk_size] for i in range(n)]
+
+docs = ["1"*10000, "2"*10000]
+parent_splitter = partial(chunk_size=1000)
+child_splitter = partial(chunk_size=200)
+
+parent_docstore: Dict[str, str] = {}  # parent-id -> parent chunk text
+child_idx_to_parent: Dict[str] = {}  # child-idx -> parent-id
+child_vectors: List[List[float]] = []
+
+n = 0
+for i, doc in enumerate(docs):
+    parent_docs = parent_splitter(doc)
+    for j, parent_doc in enumerate(parent_docs):
+        parent_key = f"parent:{i}:{j}"
+        parent_docstore[] = parrent_doc
+        child_docs = child_splitter(parrent_doc)
+        for k, child_doc in enumerate(child_docs):
+            child_idx_to_parent[n] = parent_key
+            # embedding_model: Callable[str, List[float]]
+            child_vectors.append(embedding_model(child_doc))
+            n += 1
+
+def search(query: str, n=4) -> List[str]:
+    emb = embedding_model(query)
+    idxes: List[int] = get_similar(emb, child_vectors, n)
+    
+    parent_keys = set()
+    for idx in idxes:
+        parent_keys.add(child_idx_to_parent[idx])
+
+    parent_docs = []
+    for parent_key in parent_keys:
+        parent_docs.append(parent_docstore[parent_key])
+    
+    return parent_docs
+
+docs = search("333")
+```
