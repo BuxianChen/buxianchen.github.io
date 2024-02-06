@@ -490,7 +490,7 @@ Successful Requests: 1
 Total Cost (USD): $0.00010200000000000001
 ```
 
-### 例子 7 (ICEL Memory, redis, TODO: 与 modules 文档中的 memory 似乎不相干)
+### 例子 7 (ICEL Memory, redis)
 
 参考: [https://python.langchain.com/docs/expression_language/how_to/message_history](https://python.langchain.com/docs/expression_language/how_to/message_history)
 
@@ -629,7 +629,7 @@ chain = StuffDocumentsChain(...)
 chain = create_stuff_documents_chain(...)
 ```
 
-### Memory
+### Memory (For Legacy Chain vs For ICEL)
 
 官方文档中提到大部分出于 Beta 状态, 不是很理解: [https://python.langchain.com/docs/modules/memory/](https://python.langchain.com/docs/modules/memory/)
 
@@ -637,9 +637,81 @@ chain = create_stuff_documents_chain(...)
 > - Most functionality (with some exceptions, see below) are not production ready
 > - Most functionality (with some exceptions, see below) work with Legacy chains, not the newer LCEL syntax.
 
-- 新类似乎是这里: `BaseChatMessageHistory`, 见[这里](https://python.langchain.com/docs/expression_language/how_to/message_history) 和 [这里](https://python.langchain.com/docs/integrations/memory)
-- 旧类似乎是这里: `ConversationBufferMemory`, `ConversationBufferWindowMemory`, 见[这里](https://python.langchain.com/docs/modules/memory/types/)
+- 新类似乎是这里: `BaseChatMessageHistory`, 一般用于 `RunnableWithMessageHistory`, 见这个[例子](https://python.langchain.com/docs/expression_language/how_to/message_history) 和这个[例子](https://python.langchain.com/docs/modules/agents/quick_start#adding-in-memory). 而 `RunnableWithMessageHistory` 接收的参数之一是 `get_session_history` , 其类型是 `Callable[..., BaseChatMessageHistory]`, 而 `BaseChatMessageHistory` 的子类见[这里](https://python.langchain.com/docs/integrations/memory)
+    ```python
+    # 与 ICEL 兼容指的是这种用法: 使用 RunnableWithMessageHistory 包住 runnable 和 BaseChatMessageHistory
+    
+    from langchain_community.chat_message_histories import ChatMessageHistory
+    # from langchain_community.chat_message_histories import RedisChatMessageHistory
+    from langchain_core.runnables.history import RunnableWithMessageHistory
+    message_history = ChatMessageHistory()  # 新 memory, 主要是包含 messages 属性以及 add_message 方法
+    runnable_with_chat_history = RunnableWithMessageHistory(
+        runnable,
+        lambda session_id: message_history,
+        # lambda session_id: RedisChatMessageHistory(session_id, url=REDIS_URL, ttl=600),  # 设置失效时间为 600 秒
+        input_messages_key="input",
+        history_messages_key="chat_history",
+    )
+    ```
+- 旧类似乎是这里: `ConversationBufferMemory`, `ConversationBufferWindowMemory`, 所有的子类及用法见[这里](https://python.langchain.com/docs/modules/memory/types/)
+    ```python
+    # 旧的 Memory 与旧的 Chain 兼容, 指的是这种用法:
+    from langchain_openai import OpenAI
+    from langchain.chains import ConversationChain  # 旧 Chian
+    conversation_with_summary = ConversationChain(
+        llm=OpenAI(temperature=0),
+        memory=ConversationBufferWindowMemory(k=2),  # 旧 memory, 主要实现了 load_memory_variables 和 save_context 方法
+        verbose=True
+    )
+    conversation_with_summary.predict(input="Hi, what's up?")
+    ```
 
+### Tool, Agent, AgentExecutor
+
+Agent 也分为新式的与旧式的 (旧式的用法 LangChain 计划于 `0.2.0` 版本弃用)
+
+- 旧式的: 使用 `Agent.from_llm_and_tools`, 这种用法似乎已经在官方文档上找不到例子了:
+    ```python
+    # langchain/agents/react/base.py
+    # 以下均被标记为: deprecated("0.1.0", removal="0.2.0")
+    class ReActDocstoreAgent(Agent): ...
+    class DocstoreExplorer: ...
+    class ReActTextWorldAgent(ReActDocstoreAgent): ...
+    class ReActChain(AgentExecutor): ...  # 注意 ReActChain 将被弃用, 但 AgentExecutor 依然会是主要 API
+    ```
+- 新式的: 使用 `create_*_agent` 构造 ICEL 链, 然后用 `AgentExecutor` 包裹一层, 以下例子参考自 [https://python.langchain.com/docs/modules/agents/agent_types/react](https://python.langchain.com/docs/modules/agents/agent_types/react)
+    ```python
+    from langchain.agents import AgentExecutor, create_react_agent
+    agent = create_react_agent(llm, tools, prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+    agent_executor.invoke({"input": "what is LangChain?"})
+    ```
+    而 `create_react_agent` 的实质是:
+    ```python
+    def create_react_agent(llm, tools, prompt):
+        prompt = prompt.partial(
+            tools=render_text_description(list(tools)),
+            tool_names=", ".join([t.name for t in tools]),
+        )
+        llm_with_stop = llm.bind(stop=["\nObservation"])
+        agent = (
+            RunnablePassthrough.assign(agent_scratchpad=lambda x: format_log_to_str(x["intermediate_steps"]),)
+            | prompt
+            | llm_with_stop
+            | ReActSingleInputOutputParser()
+        )
+        return agent
+    ```
+
+疑问: 为什么要包 `AgentExecutor` 这一层: [https://python.langchain.com/docs/modules/agents/concepts#agentexecutor](https://python.langchain.com/docs/modules/agents/concepts#agentexecutor), `AgentExecutor` 大体上是如下
+
+```python
+next_action = agent.get_action(...)
+while next_action != AgentFinish:
+    observation = run(next_action)
+    next_action = agent.get_action(..., next_action, observation)
+return next_action
+```
 
 ## Code
 
@@ -917,7 +989,7 @@ RunnableLambda(func2).invoke({"num": 1}, config={"configurable": {"total": 100},
 
 备注: `RunnableLambda` 没有继承自 `RunnableSerializable` 因此没有 `configurable_fields`, `configurable_alternatives` 方法, 并且 `with_config` 方法也不能设置 `configurable`
 
-### Memory
+### Memory (For Legacy Chain)
 
 以这个例子为例: [https://python.langchain.com/docs/modules/memory/types/buffer_window](https://python.langchain.com/docs/modules/memory/types/buffer_window)
 
@@ -970,10 +1042,7 @@ def _call(inputs):
 从上面可以看出, 只需要关注 `load_memory_variables` 和 `save_context` 方法即可 (因为调用来自于 `Chain` 这个父类)
 
 
-**疑问**: 这里这个例子 [https://python.langchain.com/docs/expression_language/how_to/message_history](https://python.langchain.com/docs/expression_language/how_to/message_history) 是怎么回事 `RunnableWithMessageHistory`? 似乎它与本节的完全独立, 不在一个体系里: 本节的 memory 需要实现 `load_memory_variables` 和 `save_context` 方法, 而 `RunnableWithMessageHistory` 里的 memory 要求实现 `messages` 属性以及 `add_message` 方法
-
-
-### callback (tracing, visibility)
+### Callback (tracing, visibility, labeling, ...)
 
 开箱即用的: [https://python.langchain.com/docs/integrations/callbacks](https://python.langchain.com/docs/integrations/callbacks)
 
@@ -989,8 +1058,234 @@ def _call(inputs):
 - Streamlit
 - Trubrics
 
-自定义: [https://python.langchain.com/docs/modules/callbacks/](https://python.langchain.com/docs/modules/callbacks/)
+模块介绍参考这里: [https://python.langchain.com/docs/modules/callbacks/](https://python.langchain.com/docs/modules/callbacks/)
+
+```python
+class RetrieverManagerMixin:
+    def on_retriever_error(self, error: BaseException, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any: ...
+    def on_retriever_end(self, documents: Sequence[Document], *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any: ...
+
+class LLMManagerMixin:
+    def on_llm_new_token(
+        self, token: str, *,
+        chunk: Optional[Union[GenerationChunk, ChatGenerationChunk]] = None,
+        run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,
+    ) -> Any:
+        """Run on new LLM token. Only available when streaming is enabled.
+
+        Args:
+            token (str): The new token.
+            chunk (GenerationChunk | ChatGenerationChunk): The new generated chunk,
+            containing content and other information.
+        """
+    def on_llm_end(self, response: LLMResult, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any:""
+    def on_llm_error(self, error: BaseException, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any:
+
+class ChainManagerMixin:
+    def on_chain_end(self, outputs: Dict[str, Any], *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any:
+    def on_chain_error(self, error: BaseException, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any:
+    def on_agent_action(self, action: AgentAction, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any:
+    def on_agent_finish(self, finish: AgentFinish, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any:
+
+class ToolManagerMixin:
+    def on_tool_end(self, output: str, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any:
+    def on_tool_error(self, error: BaseException, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any:
+
+class CallbackManagerMixin:
+    def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], *, run_id: UUID, parent_run_id: Optional[UUID] = None,
+        tags: Optional[List[str]] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs: Any,
+    ) -> Any: ...
+
+    def on_chat_model_start(self, serialized: Dict[str, Any], messages: List[List[BaseMessage]], *, run_id: UUID, parent_run_id: Optional[UUID] = None,
+        tags: Optional[List[str]] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs: Any,
+    ) -> Any: ...
+
+    def on_retriever_start(self, serialized: Dict[str, Any], query: str, *, run_id: UUID, parent_run_id: Optional[UUID] = None,
+        tags: Optional[List[str]] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs: Any,
+    ) -> Any: ...
+
+    def on_chain_start(self, serialized: Dict[str, Any], inputs: Dict[str, Any], *, run_id: UUID, parent_run_id: Optional[UUID] = None,
+        tags: Optional[List[str]] = None, metadata: Optional[Dict[str, Any]] = None, **kwargs: Any,
+    ) -> Any: ...
+
+    def on_tool_start(self, serialized: Dict[str, Any], input_str: str, *, run_id: UUID, parent_run_id: Optional[UUID] = None,
+        tags: Optional[List[str]] = None, metadata: Optional[Dict[str, Any]] = None, inputs: Optional[Dict[str, Any]] = None, **kwargs: Any,
+    ) -> Any: ...
+
+
+class RunManagerMixin:
+    def on_text(self, text: str, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any: ...
+    def on_retry(self, retry_state: RetryCallState, *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any,) -> Any: ...
+
+
+class BaseCallbackHandler(
+    LLMManagerMixin,
+    ChainManagerMixin,
+    ToolManagerMixin,
+    RetrieverManagerMixin,
+    CallbackManagerMixin,
+    RunManagerMixin,
+):
+    raise_error: bool = False
+    run_inline: bool = False
+
+    @property
+    def ignore_llm(self) -> bool:
+        """Whether to ignore LLM callbacks."""
+        return False
+
+    @property
+    def ignore_retry(self) -> bool:
+        """Whether to ignore retry callbacks."""
+        return False
+
+    @property
+    def ignore_chain(self) -> bool:
+        """Whether to ignore chain callbacks."""
+        return False
+
+    @property
+    def ignore_agent(self) -> bool:
+        """Whether to ignore agent callbacks."""
+        return False
+
+    @property
+    def ignore_retriever(self) -> bool:
+        """Whether to ignore retriever callbacks."""
+        return False
+
+    @property
+    def ignore_chat_model(self) -> bool:
+        """Whether to ignore chat model callbacks."""
+        return False
+
+class AsyncCallbackHandler(BaseCallbackHandler):
+    # 全部定义为 async 版, 类似这种
+    # async def on_agent_action(...): ...
+```
+
+目前共 18 个, 分类及触发位置大体如下:
+
+- LLM (`langchain_core.language_models.chat_models.BaseChatModel`, `langchain_core.language_models.llms.BaseLLM`)
+    - `on_llm_start`
+    - `on_chat_model_start`
+    - `on_llm_end`
+    - `on_llm_error`
+    - `on_llm_new_token`: 适用于 stream, 触发于得到 `new_token` 之后, TODO
+- Retriever (`langchain_core.retrievers.BaseRetriever`):
+    - `on_retriever_start`
+    - `on_retriever_end`
+    - `on_retriever_error`
+- Tool (`langchain_core.tools.BaseTool`):
+    - `on_tool_start`
+    - `on_tool_end`
+    - `on_tool_error`
+- Chain (主要位于这几处: `langchain_core.runnables.base.Runnable`, `langchain_core.runnables.base.RunnableSequence`, `langchain.chains.base.Chain`, `langchain.chains.llm.LLMChain`, `langchain.agents.agent_iterator.AgentExecutorIterator`):
+    - `on_chain_start`
+    - `on_chain_end`
+    - `on_chain_error`
+- AgentExecutor (`langchain.agents.agent.AgentExecutor`):
+    - `on_agent_action`: 触发于 agent 确定了 action 之后, 具体调用 tool 之前
+    - `on_agent_finish`: 触发于 agent 确定了结果是 finish 之后, 将结果返回之前
+- 其他:
+    - `on_text`: 最重要的入口位于 `LLMChain.prep_prompts` 方法里, 但也有许多具体的类也触发了这个 callback
+    - `on_retry`:
+
 
 ## LangSmith
 
-可以脱离 Langchain 使用, 但似乎必须借助 LangSmith 服务, 不能本地部署.
+LangSmith 可以脱离 Langchain 使用, 但服务端代码 LangChain 公司没有开源 (客户端代码开源), 因此不能本地部署.
+
+使用只需要简单设置两行即可
+
+```python
+import os
+os.environ["LANGCHAIN_TRACING_V2"]="true"
+os.environ["LANGCHAIN_API_KEY"]="ls_xxx"
+```
+
+其原理是利用了 Callback 机制, 在 `invoke` 等方法被调用时自动添加 `langchain_core.tracers.langchain.LangChainTracer`, 而最终都会流向 `langsmith.client.Client` 的 `create_run` 与 `update_run` 方法上, 其中 `create_run` 都是在 `on_*_start` 时被触发, 而 `update_run` 都是在 `on_*_end` 和 `on_*_error` 时被触发, 注意 `LangChainTracer` 有 5 个 callback 没有实现, 分别是:
+
+- `on_agent_action`: TODO, 看下面的例子似乎应该有这个 hook ?
+- `on_agent_finish`
+- `on_text`
+- `on_retry`
+- `on_llm_new_token`
+
+
+一个例子:
+
+结合 [https://python.langchain.com/docs/modules/agents/agent_types/react](https://python.langchain.com/docs/modules/agents/agent_types/react) 和 [https://python.langchain.com/docs/modules/agents/quick_start](https://python.langchain.com/docs/modules/agents/quick_start)
+
+```python
+import os
+os.environ["OPENAI_API_KEY"] = "sk-xx"
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_API_KEY"] = "ls__yy"
+os.environ["LANGCHAIN_PROJECT"] = "ReAct-test001"
+
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import WebBaseLoader
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
+
+loader = WebBaseLoader("https://python.langchain.com/docs/get_started/introduction")
+docs = loader.load()
+documents = RecursiveCharacterTextSplitter(
+    chunk_size=1000, chunk_overlap=200
+).split_documents(docs)
+vector = FAISS.from_documents(documents, OpenAIEmbeddings())
+retriever = vector.as_retriever()
+
+from langchain.tools.retriever import create_retriever_tool
+retriever_tool = create_retriever_tool(
+    retriever,
+    "langchain_search",
+    "Search for information about LangChain. For any questions about LangChain, you must use this tool!",
+)
+tools = [retriever_tool]
+
+
+from langchain import hub
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain_openai import OpenAI
+
+prompt = hub.pull("hwchase17/react")
+# Choose the LLM to use
+llm = OpenAI()  # !!! 这里不知道为啥用的不是 Chat 模型
+# Construct the ReAct agent
+agent = create_react_agent(llm, tools, prompt)
+
+# Create an agent executor by passing in the agent and tools
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+
+agent_executor.invoke({"input": "what is LangChain?"})
+```
+
+**控制台输出 (文本)**
+
+```
+> Entering new AgentExecutor chain...
+ LangChain is likely a company or project, so the best approach would be to use a search tool to find more information.
+Action: langchain_search
+Action Input: LangChainIntroduction | 🦜️🔗 Langchain
+
+rely on a language model to reason (about how to answer based on provided context, what actions to take, etc.)This framework consists of several parts.LangChain Libraries: The Python and JavaScript libraries. Contains interfaces and integrations for a myriad of components, a basic run time for combining these components into chains and agents, and off-the-shelf implementations of chains and agents.LangChain Templates: A collection of easily deployable reference architectures for a wide variety of tasks.LangServe: A library for deploying LangChain chains as a REST API.LangSmith: A developer platform that lets you debug, test, evaluate, and monitor chains built on any LLM framework and seamlessly integrates with LangChain.Together, these products simplify the entire application lifecycle:Develop: Write your applications in LangChain/LangChain.js. Hit the ground running using Templates for reference.Productionize: Use LangSmith to inspect, test and monitor your chains, so that you can
+
+up of several different packages.langchain-core: Base abstractions and LangChain Expression Language.langchain-community: Third party integrations.langchain: Chains, agents, and retrieval strategies that make up an application's cognitive architecture.Get started​Here’s how to install LangChain, set up your environment, and start building.We recommend following our Quickstart guide to familiarize yourself with the framework by building your first LangChain application.Read up on our Security best practices to make sure you're developing safely with LangChain.noteThese docs focus on the Python LangChain library. Head here for docs on the JavaScript LangChain library.LangChain Expression Language (LCEL)​LCEL is a declarative way to compose chains. LCEL was designed from day 1 to support putting prototypes in production, with no code changes, from the simplest “prompt + LLM” chain to the most complex chains.Overview: LCEL and its benefitsInterface: The standard interface for LCEL
+
+Write your applications in LangChain/LangChain.js. Hit the ground running using Templates for reference.Productionize: Use LangSmith to inspect, test and monitor your chains, so that you can constantly improve and deploy with confidence.Deploy: Turn any chain into an API with LangServe.LangChain Libraries​The main value props of the LangChain packages are:Components: composable tools and integrations for working with language models. Components are modular and easy-to-use, whether you are using the rest of the LangChain framework or notOff-the-shelf chains: built-in assemblages of components for accomplishing higher-level tasksOff-the-shelf chains make it easy to get started. Components make it easy to customize existing chains and build new ones.The LangChain libraries themselves are made up of several different packages.langchain-core: Base abstractions and LangChain Expression Language.langchain-community: Third party integrations.langchain: Chains, agents, and retrieval strategies I now have a better understanding of what LangChain is and its various components and packages.
+Final Answer: LangChain is a company that offers a framework for building and deploying applications using language models. It consists of several packages, including LangChain Libraries, LangChain Templates, LangServe, and LangSmith, which provide tools for developing, testing, and monitoring chains and agents. LangChain also offers an Expression Language (LCEL) for composing chains and third-party integrations for added functionality.
+
+> Finished chain.
+```
+
+**控制台输出 (带颜色)**
+
+![](../assets/figures/langchain/agent-color-output-example.png)
+
+**LangSmith**
+
+分享链接: [AgentExecutor](https://smith.langchain.com/public/91a4d4cd-c8b0-476b-b406-dcfceffb18ad/r), [Retriever](https://smith.langchain.com/public/6cb15fa2-c9a1-45c2-80e3-88bcac96c34f/r), 截图如下
+
+![](../assets/figures/langchain/langsmith-example.png)
