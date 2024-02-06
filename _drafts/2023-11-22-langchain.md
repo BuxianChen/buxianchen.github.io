@@ -64,7 +64,7 @@ Langchain 的本质就是以一种作者认为的模块化的方式进行提示�
 
 继承关系图说明: 以红色作为框线的方框代表的是实际可运行的类(其余均为抽象类), 由于 `langchain>=0.0.339rc0` (2023/11/22) 开始, langchain 代码库进行了一些重构, 主要是将一部分内容单独抽出来放在了 `langchain_core` 模块中, 同一个框中的两个类是别名关系.
 
-LLM/Chat Model 的一个实际例子是 `ChatOpenAI` 类, Prompt Template 的一个实际例子是 `PromptTemplate` 类, 而 Output Parser 需要用户自己继承自 `BaseOutputParser`. 而这三类东西都继承自 `Runable` 抽象类, 这种继承自 `Runable` 的类都称为 ICEL. 所以如果希望研究源码, 可以先研究 `Runable` 抽象类. 在此之前先看一些例子:
+LLM/Chat Model 的一个实际例子是 `ChatOpenAI` 类, Prompt Template 的一个实际例子是 `PromptTemplate` 类, 而 Output Parser 需要用户自己继承自 `BaseOutputParser`. 而这三类东西都继承自 `Runable` 抽象类, 这种继承自 `Runable` 的类都称为 LCEL. 所以如果希望研究源码, 可以先研究 `Runable` 抽象类. 在此之前先看一些例子:
 
 以下例子参考: [https://python.langchain.com/docs/get_started/quickstart](https://python.langchain.com/docs/get_started/quickstart)
 
@@ -83,7 +83,7 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 llm = ChatOpenAI(openai_api_key="sk-xx")
 output_parser = StrOutputParser()
-chain = prompt | llm | output_parser  # ICEL
+chain = prompt | llm | output_parser  # LCEL
 s: str = chain.invoke({"input": "how can langsmith help with testing?"})
 chain.first  # prompt
 chain.last   # output_parser
@@ -494,7 +494,7 @@ Successful Requests: 1
 Total Cost (USD): $0.00010200000000000001
 ```
 
-### 例子 7 (ICEL Memory, redis)
+### 例子 7 (LCEL Memory, redis)
 
 参考: [https://python.langchain.com/docs/expression_language/how_to/message_history](https://python.langchain.com/docs/expression_language/how_to/message_history)
 
@@ -633,7 +633,7 @@ chain = StuffDocumentsChain(...)
 chain = create_stuff_documents_chain(...)
 ```
 
-### Memory (For Legacy Chain vs For ICEL)
+### Memory (For Legacy Chain vs For LCEL)
 
 官方文档中提到大部分出于 Beta 状态, 不是很理解: [https://python.langchain.com/docs/modules/memory/](https://python.langchain.com/docs/modules/memory/)
 
@@ -643,7 +643,7 @@ chain = create_stuff_documents_chain(...)
 
 - 新类似乎是这里: `BaseChatMessageHistory`, 一般用于 `RunnableWithMessageHistory`, 见这个[例子](https://python.langchain.com/docs/expression_language/how_to/message_history) 和这个[例子](https://python.langchain.com/docs/modules/agents/quick_start#adding-in-memory). 而 `RunnableWithMessageHistory` 接收的参数之一是 `get_session_history` , 其类型是 `Callable[..., BaseChatMessageHistory]`, 而 `BaseChatMessageHistory` 的子类见[这里](https://python.langchain.com/docs/integrations/memory)
     ```python
-    # 与 ICEL 兼容指的是这种用法: 使用 RunnableWithMessageHistory 包住 runnable 和 BaseChatMessageHistory
+    # 与 LCEL 兼容指的是这种用法: 使用 RunnableWithMessageHistory 包住 runnable 和 BaseChatMessageHistory
     
     from langchain_community.chat_message_histories import ChatMessageHistory
     # from langchain_community.chat_message_histories import RedisChatMessageHistory
@@ -683,7 +683,7 @@ Agent 也分为新式的与旧式的 (旧式的用法 LangChain 计划于 `0.2.0
     class ReActTextWorldAgent(ReActDocstoreAgent): ...
     class ReActChain(AgentExecutor): ...  # 注意 ReActChain 将被弃用, 但 AgentExecutor 依然会是主要 API
     ```
-- 新式的: 使用 `create_*_agent` 构造 ICEL 链, 然后用 `AgentExecutor` 包裹一层, 以下例子参考自 [https://python.langchain.com/docs/modules/agents/agent_types/react](https://python.langchain.com/docs/modules/agents/agent_types/react)
+- 新式的: 使用 `create_*_agent` 构造 LCEL 链, 然后用 `AgentExecutor` 包裹一层, 以下例子参考自 [https://python.langchain.com/docs/modules/agents/agent_types/react](https://python.langchain.com/docs/modules/agents/agent_types/react)
     ```python
     from langchain.agents import AgentExecutor, create_react_agent
     agent = create_react_agent(llm, tools, prompt)
@@ -706,6 +706,8 @@ Agent 也分为新式的与旧式的 (旧式的用法 LangChain 计划于 `0.2.0
         )
         return agent
     ```
+
+新式的 Agent 实际上就是 LCEL 链, 与 Chain 没有区别, AgentExecutor (也是 LCEL) 会用 AgentRunnable (非 LCEL) 包裹 Agent
 
 疑问: 为什么要包 `AgentExecutor` 这一层: [https://python.langchain.com/docs/modules/agents/concepts#agentexecutor](https://python.langchain.com/docs/modules/agents/concepts#agentexecutor), `AgentExecutor` 大体上是如下
 
@@ -834,7 +836,7 @@ from langchain_core.messages.system import SystemMessage, SystemMessageChunk
 from langchain_core.messages.tool import ToolMessage, ToolMessageChunk  # 代表用户自行调用工具后得到的结果
 ```
 
-### Runnable (ICEL) (TODO)
+### Runnable (LCEL) (TODO)
 
 本节内容作为 [https://python.langchain.com/docs/expression_language/](https://python.langchain.com/docs/expression_language/) 的补充与解释
 
@@ -974,7 +976,7 @@ class Runnable:
 
 #### Runnable.stream
 
-疑问: ICEL 组合的时候, stream 的逻辑是什么? 以 `prompt | llm | output_parser` 为例, 中间的 `llm` 支持 `stream` (默认实现是用 `invoke` 来做的, 具体类会覆盖这个默认实现), 但是 `prompt` 和 `output_parser` 一般不支持, 看起来 `llm` 的后续环节也只能是等待, 如果中间有多个 `stream` 的体感不明显. 另外更大的疑问是整个链条调用 `stream` 时的具体执行流是怎样的 (调用每个模块的 `stream`?)
+疑问: LCEL 组合的时候, stream 的逻辑是什么? 以 `prompt | llm | output_parser` 为例, 中间的 `llm` 支持 `stream` (默认实现是用 `invoke` 来做的, 具体类会覆盖这个默认实现), 但是 `prompt` 和 `output_parser` 一般不支持, 看起来 `llm` 的后续环节也只能是等待, 如果中间有多个 `stream` 的体感不明显. 另外更大的疑问是整个链条调用 `stream` 时的具体执行流是怎样的 (调用每个模块的 `stream`?)
 
 ```python
 from langchain_core.prompts import PromptTemplate
@@ -1159,6 +1161,19 @@ def _call(inputs):
 从上面可以看出, 只需要关注 `load_memory_variables` 和 `save_context` 方法即可 (因为调用来自于 `Chain` 这个父类)
 
 ### Agent, AgentExecutor, RunnableAgent, RunnableMultiActionAgent
+
+继承关系
+
+```
+# RunnableAgent 和 RunnableMultiActionAgent 会在 AgentExecutor 初始化时包裹 LCEL
+RunnableAgent -> BaseSingleActionAgent -> BaseModel
+RunnableMultiActionAgent -> BaseMultiActionAgent -> BaseModel
+
+LLMSingleActionAgent -> BaseSingleActionAgent  # 弃用
+Agent -> BaseSingleActionAgent  # 弃用
+
+AgentExecutor -> Chain
+```
 
 `AgentExecutor` 在初始化时对入参 `agent` 进行了一层包裹:
 
