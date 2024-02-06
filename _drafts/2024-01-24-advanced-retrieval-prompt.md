@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(P1) Advanced LLM Prompts & Retrieval & Agents"
+title: "(LTS) Advanced LLM Prompts & Retrieval & Agents"
 date: 2024-01-24 11:10:04 +0800
 labels: [llm]
 ---
@@ -102,4 +102,46 @@ def search(query: str, n=4) -> List[str]:
     return parent_docs
 
 docs = search("333")
+```
+
+## HyDE
+
+对于问题 `query`, 先让大模型生成答案, 然后根据答案做搜索 (大致是 Answer-Answer 匹配?), 然后再进行 RAG 让大模型给出答案. 核心在于期望能提升检索模型的性能
+
+参考 [https://github.com/langchain-ai/langchain/tree/master/templates/hyde](https://github.com/langchain-ai/langchain/tree/master/templates/hyde) 或原始论文 [https://arxiv.org/abs/2212.10496](https://arxiv.org/abs/2212.10496), 用 Langchain 来实现十分简洁:
+
+```python
+# hyde_prompt
+hyde_prompt = """Please write a passage to answer the question 
+Question: {question}
+Passage:"""
+
+# RAG prompt
+template = """Answer the question based only on the following context:
+{context}
+
+Question: {question}
+"""
+prompt = ChatPromptTemplate.from_template(template)
+
+# LLM
+model = ChatOpenAI()
+
+# Query transformation chain
+# This transforms the query into the hypothetical document
+hyde_chain = hyde_prompt | model | StrOutputParser()
+
+# RAG chain
+chain = (
+    RunnableParallel(
+        {
+            # Generate a hypothetical document and then pass it to the retriever
+            "context": hyde_chain | retriever,
+            "question": lambda x: x["question"],
+        }
+    )
+    | prompt
+    | model
+    | StrOutputParser()
+)
 ```

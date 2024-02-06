@@ -85,6 +85,10 @@ llm = ChatOpenAI(openai_api_key="sk-xx")
 output_parser = StrOutputParser()
 chain = prompt | llm | output_parser  # ICEL
 s: str = chain.invoke({"input": "how can langsmith help with testing?"})
+chain.first  # prompt
+chain.last   # output_parser
+chain.middle # [llm]
+chain.steps  # [prompt, llm, output_parser]
 ```
 
 ### 例子2 (模型自定义, langserver)
@@ -715,6 +719,108 @@ return next_action
 
 ## Code
 
+### Custom Components
+
+调试时有可能需要制造一些假的组件
+
+**Custom LLM**
+
+[https://python.langchain.com/docs/modules/model_io/llms/custom_llm](https://python.langchain.com/docs/modules/model_io/llms/custom_llm)
+
+```python
+from typing import Any, List, Mapping, Optional, Iterator
+from langchain.callbacks.manager import CallbackManagerForLLMRun
+from langchain_core.outputs import GenerationChunk
+from langchain.llms.base import LLM
+
+class FixedReturnLLM(LLM):
+    fixed_return_string: str
+
+    @property
+    def _llm_type(self) -> str:
+        return "custom"
+
+    def _call(
+        self,
+        prompt: str,
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> str:
+        return self.fixed_return_string
+
+    def _stream(self,
+        prompt: str,
+        stop: Optional[List[str]] = None,
+        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        **kwargs: Any,
+    ) -> Iterator[GenerationChunk]:
+        for s in self.fixed_return_string:
+            yield GenerationChunk(text=s)
+    
+    @property
+    def _identifying_params(self) -> Mapping[str, Any]:
+        """Get the identifying parameters."""
+        return {"fixed_return_string": self.fixed_return_string,}
+
+fake_llm = FixedReturnLLM(fixed_return_string="Final Answer: yyy")
+fake_llm.invoke("x")        # "Final Answer: yyy"
+list(fake_llm.stream("x"))  # ['F', 'i', 'n', 'a', 'l', ' ', 'A', 'n', 's', 'w', 'e', 'r', ':', ' ', 'y', 'y', 'y']
+```
+
+**Custom Retriever**
+
+[https://python.langchain.com/docs/modules/data_connection/retrievers/#custom-retriever](https://python.langchain.com/docs/modules/data_connection/retrievers/#custom-retriever)
+
+```python
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
+from typing import List
+from langchain.tools.retriever import create_retriever_tool
+
+
+class FixedReturnRetriever(BaseRetriever):
+    fixed_return_documents: List[str]
+    
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> List[Document]:
+        return [Document(page_content=doc) for doc in self.fixed_return_documents]
+
+fake_retriever = FixedReturnRetriever(fixed_return_documents=["foobar"])
+fake_retriever.get_relevant_documents("bar")  # [Document(page_content='foobar')]
+
+fake_retriever_tool = create_retriever_tool(
+    fake_retriever,
+    "fake tool",
+    "This is fake tool's description",
+)
+fake_tools = [fake_retriever_tool]
+```
+
+**Agent**
+
+TODO: 参考下文 LangSmith 里的例子
+
+```python
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain import hub
+prompt = hub.pull("hwchase17/react")
+fake_agent = create_react_agent(fake_llm, fake_tools, prompt)
+fake_agent_executor = AgentExecutor(agent=fake_agent, tools=fake_tools, verbose=True)
+
+fake_agent_executor.invoke({"input": "x"})  # {'input': 'x', 'output': 'xxx'}
+
+# 控制台输出
+# > Entering new AgentExecutor chain...
+# Final Answer: xxx
+
+# > Finished chain.
+# 直接对 agent 调用
+fake_agent.invoke({"input": "x", "intermediate_steps": []})  # AgentFinish(return_values={'output': 'xxx'}, log='Final Answer: xxx')
+```
+
 ### Message
 
 ```python
@@ -864,6 +970,16 @@ RunnableMultiActionAgent
 class Runnable:
     @abstractmethod
     def invoke(self, input: Input, config: Optional[RunnableConfig] = None) -> Output: ...
+```
+
+#### Runnable.stream
+
+疑问: ICEL 组合的时候, stream 的逻辑是什么? 以 `prompt | llm | output_parser` 为例, 中间的 `llm` 支持 `stream` (默认实现是用 `invoke` 来做的, 具体类会覆盖这个默认实现), 但是 `prompt` 和 `output_parser` 一般不支持, 看起来 `llm` 的后续环节也只能是等待, 如果中间有多个 `stream` 的体感不明显. 另外更大的疑问是整个链条调用 `stream` 时的具体执行流是怎样的 (调用每个模块的 `stream`?)
+
+```python
+from langchain_core.prompts import PromptTemplate
+prompt = PromptTemplate.from_template("{text}")
+prompt.__class__.stream is Runnable.stream  # True, 但这个实现就只是 yield self.invoke(...)
 ```
 
 #### Runnable.with_config, configurable_fields, configurable_alternatives
@@ -1031,7 +1147,8 @@ def prep_inputs(self, inputs)
 def prep_outputs(self, inputs, outputs):
     if self.memory is not None:
         self.memory.save_context(inputs, outputs)
-    return outputs
+    # 严格地说, prep_outputs 还包含一个 return_only_outputs 的入参, 默认值为 False, 此参数可以在 invoke 的时候进行传递
+    return {**inputs, **outputs}
 
 def _call(inputs):
     prompts, stop = self.prep_prompts(input_list, run_manager=run_manager)
@@ -1041,6 +1158,107 @@ def _call(inputs):
 
 从上面可以看出, 只需要关注 `load_memory_variables` 和 `save_context` 方法即可 (因为调用来自于 `Chain` 这个父类)
 
+### Agent, AgentExecutor, RunnableAgent, RunnableMultiActionAgent
+
+`AgentExecutor` 在初始化时对入参 `agent` 进行了一层包裹:
+
+```python
+class AgentExecutor(Chain):
+    # 注意传入的 agent 参数被转换为了 RunnableAgent 或 RunnableMultiActionAgent
+    @root_validator(pre=True)
+    def validate_runnable_agent(cls, values: Dict) -> Dict:
+        """Convert runnable to agent if passed in."""
+        agent = values["agent"]
+        if isinstance(agent, Runnable):
+            try:
+                output_type = agent.OutputType
+            except Exception as _:
+                multi_action = False
+            else:
+                multi_action = output_type == Union[List[AgentAction], AgentFinish]
+
+            if multi_action:
+                values["agent"] = RunnableMultiActionAgent(runnable=agent)
+            else:
+                values["agent"] = RunnableAgent(runnable=agent)
+        return values
+```
+
+TODO: 参考下文中的 LangSmith 为例
+
+```python
+fake_agent_executor = AgentExecutor(
+    agent=agent,
+    tools=tools,
+    verbose=True,  # 默认为 False
+    handle_parsing_errors=True  # 默认为 False
+)
+```
+
+TODO: remove This
+
+```python
+# output_parser 主要关注 parse 方法, invoke 一般也会回落到 parse 方法
+agent.last.invoke(" LangChain is likely a company or project, so the best approach would be to use a search tool to find more information.\nAction: langchain_search\nAction Input: LangChain")
+# AgentAction(
+#     tool='langchain_search',
+#     tool_input='LangChain',
+#     log=' LangChain is likely a company or project, so the best approach would be to use a search tool to find more information.\nAction: langchain_search\nAction Input: LangChain'
+# )
+```
+
+`AgentExecutor` 直接继承自 `Chain`, 按上一节分析, 只需要关注 `prep_inputs`, `_call`, `prep_outputs` 方法即可, 而此处没有用到 `memory`, 所以 `prep_inputs` 和 `prep_outputs` 相当于直接跳过, 因此只关注 `AgentExecutor._call` 方法即可
+
+```python
+class AgentExecutor(Chain):
+    # _call 的完整源码如下:
+    def _call(
+        self,
+        inputs: Dict[str, str],
+        run_manager: Optional[CallbackManagerForChainRun] = None,
+    ) -> Dict[str, Any]:
+        """Run text through and get agent response."""
+        # Construct a mapping of tool name to tool for easy lookup
+        name_to_tool_map = {tool.name: tool for tool in self.tools}
+        # We construct a mapping from each tool to a color, used for logging.
+        color_mapping = get_color_mapping(
+            [tool.name for tool in self.tools], excluded_colors=["green", "red"]
+        )
+        intermediate_steps: List[Tuple[AgentAction, str]] = []
+        # Let's start tracking the number of iterations and time elapsed
+        iterations = 0
+        time_elapsed = 0.0
+        start_time = time.time()
+        # We now enter the agent loop (until it returns something).
+        while self._should_continue(iterations, time_elapsed):
+            next_step_output = self._take_next_step(
+                name_to_tool_map,
+                color_mapping,
+                inputs,
+                intermediate_steps,
+                run_manager=run_manager,
+            )
+            if isinstance(next_step_output, AgentFinish):
+                return self._return(
+                    next_step_output, intermediate_steps, run_manager=run_manager
+                )
+
+            intermediate_steps.extend(next_step_output)
+            if len(next_step_output) == 1:
+                next_step_action = next_step_output[0]
+                # See if tool should return directly
+                tool_return = self._get_tool_return(next_step_action)
+                if tool_return is not None:
+                    return self._return(
+                        tool_return, intermediate_steps, run_manager=run_manager
+                    )
+            iterations += 1
+            time_elapsed = time.time() - start_time
+        output = self.agent.return_stopped_response(
+            self.early_stopping_method, intermediate_steps, **inputs
+        )
+        return self._return(output, intermediate_steps, run_manager=run_manager)
+```
 
 ### Callback (tracing, visibility, labeling, ...)
 
@@ -1213,7 +1431,7 @@ os.environ["LANGCHAIN_API_KEY"]="ls_xxx"
 - `on_llm_new_token`
 
 
-一个例子:
+例子:
 
 结合 [https://python.langchain.com/docs/modules/agents/agent_types/react](https://python.langchain.com/docs/modules/agents/agent_types/react) 和 [https://python.langchain.com/docs/modules/agents/quick_start](https://python.langchain.com/docs/modules/agents/quick_start)
 
