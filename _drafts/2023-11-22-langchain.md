@@ -91,7 +91,7 @@ chain.middle # [llm]
 chain.steps  # [prompt, llm, output_parser]
 ```
 
-### 例子2 (模型自定义, langserver)
+### 例子 2 (模型自定义, langserver)
 
 ```bash
 pip install langchain langserve sse_starlette
@@ -597,6 +597,66 @@ message_history.messages
 
 ### ConversationalRetrievalChain (TODO)
 
+### Agents
+
+不同的 Agent 一般只是 prompt 和 output parser 不太相同, 而默认的 prompt 一般外挂在 langchain hub, 默认的 output parser 位于 langchain 代码库内
+
+`structured_chat` vs `ReAct`: `ReAct` 的工具都只能接收字符串作为输入, 而 `structured_chat` 的工具可以接收多个参数作为输入, 区别主要是
+
+- prompt 不同
+- output parser 不同: `structured_chat` 是 `JSONAgentOutputParser`, `ReAct` 是 `ReActSingleInputOutputParser`
+- tool 的调用格式不同 (`tool.run(tool_input=tool_input)`): `structured_chat` 的输入参数 `tool_input` 可以是一个字典, 而 `ReAct` 所使用的工具只能是字符串
+    ```python
+    # 可适用于 structured_chat
+    @langchain.tools.tool
+    def search(q: str, p: str) -> str:
+        """Look up things online."""
+        return q + p
+    search.run(tool_input={"q": "1", "p": "2"})
+
+    # 既可适用于 structured_chat, 又可适用于 ReAct
+    @langchain.tools.tool
+    def search(q: str) -> str:
+        """Look up things online."""
+        return q
+    search.run(tool_input="1")
+    search.run(tool_input={"q": "1"})
+    ```
+
+```python
+def create_structured_chat_agent(
+    llm: BaseLanguageModel, tools: Sequence[BaseTool], prompt: ChatPromptTemplate
+) -> Runnable:
+    prompt = prompt.partial(
+        tools=render_text_description_and_args(list(tools)),  # 注意这里还包含args的描述, 即: tool.name, tool.description, tool.args
+        tool_names=", ".join([t.name for t in tools]),
+    )
+    llm_with_stop = llm.bind(stop=["Observation"])
+    agent = (
+        RunnablePassthrough.assign(
+            agent_scratchpad=lambda x: format_log_to_str(x["intermediate_steps"]),
+        )
+        | prompt
+        | llm_with_stop
+        | JSONAgentOutputParser()  # 这里用的是 JSONAgentOutputParser, 用于解析 json 字符串, 从而拿到 action (string) 和 action_input (dict)
+    )
+    return agent
+
+def create_react_agent(llm, tools, prompt):
+    prompt = prompt.partial(
+        tools=render_text_description(list(tools)),
+        tool_names=", ".join([t.name for t in tools]),
+    )
+    llm_with_stop = llm.bind(stop=["\nObservation"])
+    agent = (
+        RunnablePassthrough.assign(agent_scratchpad=lambda x: format_log_to_str(x["intermediate_steps"]),)
+        | prompt
+        | llm_with_stop
+        | ReActSingleInputOutputParser()  # 这里用的是 ReActSingleInputOutputParser, 用于提取 Action: 和 Action Input: 后面的内容
+    )
+    return agent
+```
+
 ## Concept
 
 ### `Runnable` vs `Chain`
@@ -720,6 +780,28 @@ return next_action
 ```
 
 ## Code
+
+### Utilities
+
+`ChatPromptTemplate` 似乎没有很好的打印方式, 可以使用如下代码段
+
+```python
+from langchain import hub
+from langchain_core.utils.input import get_colored_text
+
+def print_chat_prompt_template(chat_prompt_template):
+    for message in chat_prompt_template.messages:
+        message_type = message.__class__.__name__
+        print(get_colored_text(message_type, "green"))
+        if message_type == "MessagesPlaceholder":
+            print(message)
+        else:
+            print(message.prompt.template)
+
+structured_chat_prompt = hub.pull("hwchase17/structured-chat-agent")
+print_chat_prompt_template(structured_chat_prompt)
+```
+
 
 ### Custom Components
 
@@ -1162,6 +1244,20 @@ def _call(inputs):
 
 ### Agent, AgentExecutor, RunnableAgent, RunnableMultiActionAgent
 
+**TL;DR**: `AgentExecutor` 的入参 `agent` 需要满足的条件是
+
+```python
+result = agent.invoke(
+    {
+        "input": "xxx",
+        "intermediate_steps": [
+            (AgentAction(...), observation),
+        ]
+    }
+)
+result: Union[AgentAction, AgentFinish, List[AgentAction]]
+```
+
 继承关系
 
 ```
@@ -1170,7 +1266,7 @@ RunnableAgent -> BaseSingleActionAgent -> BaseModel
 RunnableMultiActionAgent -> BaseMultiActionAgent -> BaseModel
 
 LLMSingleActionAgent -> BaseSingleActionAgent  # 弃用
-Agent -> BaseSingleActionAgent  # 弃用
+Agent -> BaseSingleActionAgent  # 弃用, 因此不分析
 
 AgentExecutor -> Chain
 ```
@@ -1253,15 +1349,20 @@ class AgentExecutor(Chain):
                 intermediate_steps,
                 run_manager=run_manager,
             )
+            # next_step_output 的类型是 Union[AgentFinish, List[Tuple[AgentAction, str]]]
+            # 如果是后一种情况, 每个 tuple 的第 2 项是工具的输出内容
             if isinstance(next_step_output, AgentFinish):
                 return self._return(
                     next_step_output, intermediate_steps, run_manager=run_manager
                 )
 
             intermediate_steps.extend(next_step_output)
-            if len(next_step_output) == 1:
+            if len(next_step_output) == 1:  # 此处含义不明!!! 为什么需要这个长度为 1 的判断, 遍历一遍只要遇到有 return_direct 的工具就返回不行吗?
                 next_step_action = next_step_output[0]
                 # See if tool should return directly
+                # 所有的 tool 都继承自 BaseTool, 包含一个 return_direct 字段 (默认是 False)
+                # 如果某个 tool 的 return_direct 字段设置为 True, 那么只要调用了这个工具就直接把 observation 返回
+                # tool_return 的类型是 Optional[AgentFinish]
                 tool_return = self._get_tool_return(next_step_action)
                 if tool_return is not None:
                     return self._return(
@@ -1269,10 +1370,76 @@ class AgentExecutor(Chain):
                     )
             iterations += 1
             time_elapsed = time.time() - start_time
+        # 此处表示超时或达到最大迭代次数, self.early_stopping_method 默认为 "force", 行为是
+        # output = AgentFinish(return_values={"output": "Agent stopped due to max iterations."}, log="")
         output = self.agent.return_stopped_response(
             self.early_stopping_method, intermediate_steps, **inputs
         )
+        # 这里主要是触发 run_manager.on_agent_finish, 以及将结果处理成 output.return_values.update("intermediate_steps": intermediate_steps)
+        # 备注: 是否包含 intermediate_steps 视 self.return_intermediate_steps True/False 决定
         return self._return(output, intermediate_steps, run_manager=run_manager)
+```
+
+`_take_next_step` 的实际运作逻辑大体如下, 实际实现还包了几层内部函数: `_iter_next_step`, `_consume_next_step`
+
+```python
+def _take_next_step(...) -> Union[AgentFinish, List[Tuple[AgentAction, str]]]:
+    # self.agent 可能是 RunnableAgent 或 RunnableMultiActionAgent, 见下面说明
+    output: Union[AgentFinish, AgentAction, List[AgentAction]] = self.agent.plan(intermediate_steps,**inputs)
+    actions: List[AgentAction]
+
+    if isinstance(output, AgentFinish):
+        return output
+    else:
+        if isinstance(output, AgentAction):
+            actions = [output]
+        else:
+            actions = output
+
+        result: List[Tuple(AgentAction, str)]
+        for agent_action in actions:
+            if agent_action.tool in name_to_tool_map:
+                tool = name_to_tool_map[agent_action.tool]
+                observation: str = tool.run(agent_action.tool_input, ...)  # 调用 tool 的 run 方法
+            else:
+                observation = InvalidTool().run(
+                    {
+                        "requested_tool_name": agent_action.tool,
+                        "available_tool_names": list(name_to_tool_map.keys()),
+                    }, ...
+                )
+            result.append((agent_action, observation))
+        return result
+```
+
+`self.agent.plan` 是 `RunnableAgent.plan` 或 `RunnableMultiActionAgent.plan`, 去掉注释的源码如下 (本质上实现一模一样), 底层都是通过内部的 `runnable.stream` 方法来实现的, 而这个 `runnable` 就是前面提到的 `AgentExecutor` 构造方法的入参, 也即 `create_*_agent` 的返回结果. 
+
+```python
+class RunnableAgent(BaseSingleActionAgent):
+    def plan(self, intermediate_steps: List[Tuple[AgentAction, str]],
+        callbacks: Callbacks = None, **kwargs: Any,
+    ) -> Union[AgentAction, AgentFinish]:
+        inputs = {**kwargs, **{"intermediate_steps": intermediate_steps}}
+        final_output: Any = None
+        for chunk in self.runnable.stream(inputs, config={"callbacks": callbacks}):
+            if final_output is None:
+                final_output = chunk
+            else:
+                final_output += chunk
+        return final_output
+
+class RunnableMultiActionAgent(BaseMultiActionAgent):
+    def plan(self, intermediate_steps: List[Tuple[AgentAction, str]],
+        callbacks: Callbacks = None, **kwargs: Any,
+    ) -> Union[List[AgentAction], AgentFinish]:
+        inputs = {**kwargs, **{"intermediate_steps": intermediate_steps}}
+        final_output: Any = None
+        for chunk in self.runnable.stream(inputs, config={"callbacks": callbacks}):
+            if final_output is None:
+                final_output = chunk
+            else:
+                final_output += chunk
+        return final_output
 ```
 
 ### Callback (tracing, visibility, labeling, ...)
