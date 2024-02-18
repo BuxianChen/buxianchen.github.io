@@ -145,3 +145,8 @@ chain = (
     | StrOutputParser()
 )
 ```
+
+### Multi Query Retriever
+
+- `Langchain`: [https://python.langchain.com/docs/modules/data_connection/retrievers/MultiQueryRetriever](https://python.langchain.com/docs/modules/data_connection/retrievers/MultiQueryRetriever), 多个 query
+- `llama_index`: [https://docs.llamaindex.ai/en/stable/examples/retrievers/simple_fusion.html](https://docs.llamaindex.ai/en/stable/examples/retrievers/simple_fusion.html), 多个 query, 多个索引
