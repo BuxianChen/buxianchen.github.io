@@ -9,6 +9,8 @@ labels: [llm]
 
 一些可用的 Embedding 模型与 ReRanking 模型使用及注意事项
 
+leaderboard: [https://huggingface.co/spaces/mteb/leaderboard](https://huggingface.co/spaces/mteb/leaderboard)
+
 ## 可用模型
 
 ### OpenAI

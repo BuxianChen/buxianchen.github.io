@@ -255,3 +255,113 @@ langchain_splitter = RecursiveCharacterTextSplitter(
 splits = langchain_splitter.split_text(text)
 print(len(splits), max([len(split) for split in splits]))
 ```
+
+## 阿里文本分割模型
+
+模型地址: [https://www.modelscope.cn/models/iic/nlp_bert_document-segmentation_chinese-base/](https://www.modelscope.cn/models/iic/nlp_bert_document-segmentation_chinese-base/)
+
+被用在: [langchain-chatchat: AliTextSplitter](https://github.com/chatchat-space/Langchain-Chatchat/blob/1fa714ee71940a25818c72b3e663d05ff9b3b19d/text_splitter/ali_text_splitter.py)
+
+关键参数:
+
+- 最大序列长度为 512
+- 模型大小为 0.1B
+- 语言: 中文/英文
+
+局限性: 因为具体实现上会利用文本中的 `\n` 及标点符号进行预分割 (这一过程决定了最小单元), 因此如果是一段没有标点符号以及换行符的文本, 则必须自己实现预分割逻辑
+
+```python
+from modelscope.outputs import OutputKeys
+from modelscope.pipelines import pipeline
+from modelscope.utils.constant import Tasks
+
+p = pipeline(
+    task=Tasks.document_segmentation,
+    model='iic/nlp_bert_document-segmentation_chinese-base',
+    device="cpu"
+)
+
+# 注意这个例子中 doc 不包含 \n, 但有标点符号, 最后的分割效果依然尚可
+doc = '移动端语音唤醒模型，检测关键词为“小云小云”。模型主体为4层FSMN结构，使用CTC训练准则，参数量750K，适用于移动端设备运行。模型输入为Fbank特征，输出为基于char建模的中文全集token预测，测试工具根据每一帧的预测数据进行后处理得到输入音频的实时检测结果。模型训练采用“basetrain + finetune”的模式，basetrain过程使用大量内部移动端数据，在此基础上，使用1万条设备端录制安静场景“小云小云”数据进行微调，得到最终面向业务的模型。后续用户可在basetrain模型基础上，使用其他关键词数据进行微调，得到新的语音唤醒模型，但暂时未开放模型finetune功能。'
+result = p.predict(documents=doc)
+
+print(result[OutputKeys.TEXT])
+```
+
+**输出**
+
+以 `\n\t` 分割
+
+```python
+	移动端语音唤醒模型，检测关键词为“小云小云”。模型主体为4层FSMN结构，使用CTC训练准则，参数量750K，适用于移动端设备运行。模型输入为Fbank特征，输出为基于char建模的中文全集token预测，测试工具根据每一帧的预测数据进行后处理得到输入音频的实时检测结果。
+	模型训练采用“basetrain + finetune”的模式，basetrain过程使用大量内部移动端数据，在此基础上，使用1万条设备端录制安静场景“小云小云”数据进行微调，得到最终面向业务的模型。后续用户可在basetrain模型基础上，使用其他关键词数据进行微调，得到新的语音唤醒模型，但暂时未开放模型finetune功能。
+	
+```
+
+**内部实现逻辑**
+
+- 先用正则切分为小段: `p.cut_sentence(doc)`, 基本上就是按标点符号做的处理
+    ```python
+    # 源码: https://github.com/modelscope/modelscope/blob/master/modelscope/pipelines/nlp/document_segmentation_pipeline.py
+    def cut_sentence(self, para):
+        para = re.sub(r'([。！.!？\?])([^”’])', r'\1\n\2', para)  # noqa *
+        para = re.sub(r'(\.{6})([^”’])', r'\1\n\2', para)  # noqa *
+        para = re.sub(r'(\…{2})([^”’])', r'\1\n\2', para)  # noqa *
+        para = re.sub(r'([。！？\?][”’])([^，。！？\?])', r'\1\n\2', para)  # noqa *
+        para = para.rstrip()
+        return [_ for _ in para.split('\n') if _]
+    ```
+- 然后判断每个的标签: 只有两种标签 `['B-EOP', 'O']`
+- 最后将标签合并: 实际上就是按 `B-EOP` 分割
+    ```python
+    docs = [d1, d2, d3, d4, d5, d6]
+    labels = ["O", "B-EOP", "O", "O", "O", "B-EOP"]
+    # 合并后
+    segs = ["".join([d1, d2]), "".join([d3, d4, d5, d6])]
+    ```
+
+可以尝试探索这些
+
+```python
+p.cut_sentence(doc)  # 正则分割
+p.preprocessor.label_list  # ['B-EOP', 'O']
+```
+
+
+## Unstructured (text splitter?)
+
+用处:
+
+- langchain: `langchain_community.document_loaders.unstructured.UnstructuredFileLoader` 使用 unstructured 包来作为无结构化文件的加载器
+- langchain-chatchat: [ppt, image, pdf, doc](https://github.com/chatchat-space/Langchain-Chatchat/tree/1fa714ee71940a25818c72b3e663d05ff9b3b19d/document_loaders) 里的无结构文件加载器也是使用 unstructured 包
+
+```python
+# 见前面 rapidocr 的例子
+# 注意此处会下载 nltk 的模型: tokenizers/punkt.zip 与 taggers/averaged_perceptron_tagger.zip
+from unstructured.partition.text import partition_text
+text = "\n".join([r[1] for r in result])
+result = partition_text(text=text)
+```
+
+**输出**
+
+```
+# result: 似乎是切文档然后做分类
+[<unstructured.documents.elements.Title at 0x7fb378d0dd90>,
+ <unstructured.documents.elements.Title at 0x7fb378d0de80>,
+ <unstructured.documents.elements.Title at 0x7fb378d0df40>,
+ <unstructured.documents.elements.Title at 0x7fb378d0df70>,
+ <unstructured.documents.elements.Text at 0x7fb378d083a0>,
+ <unstructured.documents.elements.Title at 0x7fb378d08430>,
+ <unstructured.documents.elements.Text at 0x7fb378d0df10>,
+ <unstructured.documents.elements.Text at 0x7fb378b6cbe0>]
+```
+
+备注: 不确定在中文上上的表现, 另外这个例子中 `text` 中包含了 `\n`, 似乎暗示着需要预分割且分割符为 `\n`
+
+```python
+# 可能不恰当的用法
+text = "\t".join([r[1] for r in result])
+result = partition_text(text=text)
+# result: [<unstructured.documents.elements.NarrativeText at 0x7f3fbc816190>]
+```
