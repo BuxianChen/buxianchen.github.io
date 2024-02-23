@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(LTS) Langchain-ChatChat 浅析"
+title: "(P0) Langchain-ChatChat 浅析"
 date: 2024-02-21 12:10:04 +0800
 labels: [llm]
 ---
@@ -53,6 +53,63 @@ shutdown_all.sh  # 不确定用法
 release.py   # 不确定用途
 ```
 
-## `server/`
+## 入口: `startup.py`
+
+```python
+python copy_config_example.py
+python init_database.py --recreate-vs
+python startup.py -a  # 也即 --all-webui
+```
+
+`python startup.py` 的选项有:
+
+<table>
+<th>
+    <td>all_webui</td>
+    <td>all_api</td>
+    <td>llm_api</td>
+</th>
+<tr>
+    <td>openai_api</td>
+    <td>True</td>
+    <td>True</td>
+    <td>True</td>
+</tr>
+<tr>
+    <td>model_worker</td>
+    <td>True</td>
+    <td>True</td>
+    <td>True</td>
+</tr>
+<tr>
+    <td>api_worker</td>
+    <td>True</td>
+    <td>True</td>
+    <td>True</td>
+</tr>
+<tr>
+    <td>api</td>
+    <td>True</td>
+    <td>True</td>
+    <td>False</td>
+</tr>
+<tr>
+    <td>webui</td>
+    <td>True</td>
+    <td>False</td>
+    <td>False</td>
+</tr>
+</table>
+
+其他参数
+
+- `--lite`: 待研究
+- `--model-name`: 指定模型名
+- `--controller`: 大概跟 fastchat 有关
+- `--quiet`: 减少 fastchat 的日志输出
+
+`startup.py` 重点 (如果不关注本地模型启动的话) 只在于 `run_api_server` 与 `run_webui` 方法, 前者定义了许多 chain 的接口, 后者实际上起了个 `streamlit run webui.py ...` 的子进程. 可以先从 webui 看起
 
 ## `web_pages/`
+
+## `server/`
