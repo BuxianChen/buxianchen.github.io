@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(P0) Langchain-ChatChat 浅析"
+title: "(P1) Langchain-ChatChat 浅析"
 date: 2024-02-21 12:10:04 +0800
 labels: [llm]
 ---

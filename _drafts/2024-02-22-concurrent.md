@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(LTS) 并发 (for Python)"
+title: "(P1) 并发 (for Python)"
 date: 2024-02-22 10:05:04 +0800
 labels: [python]
 ---
