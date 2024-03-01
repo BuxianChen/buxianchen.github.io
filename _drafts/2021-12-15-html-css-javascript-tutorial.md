@@ -16,6 +16,11 @@ html 是一种标记语言，换句话说，是一种按照某种格式来书写
 - css：`/* comment */`
 - javascript：`// comment`
 
+## 资料推荐
+
+MDN Docs: [https://developer.mozilla.org](https://developer.mozilla.org)
+CheatSheet: [https://htmlcheatsheet.com/](https://htmlcheatsheet.com/)
+
 ## HTML
 
 ### tutorial
