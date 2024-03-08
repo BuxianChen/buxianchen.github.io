@@ -150,3 +150,28 @@ chain = (
 
 - `Langchain`: [https://python.langchain.com/docs/modules/data_connection/retrievers/MultiQueryRetriever](https://python.langchain.com/docs/modules/data_connection/retrievers/MultiQueryRetriever), 多个 query
 - `llama_index`: [https://docs.llamaindex.ai/en/stable/examples/retrievers/simple_fusion.html](https://docs.llamaindex.ai/en/stable/examples/retrievers/simple_fusion.html), 多个 query, 多个索引
+
+
+### MMR (maximal_marginal_relevance): Rerank 技术
+
+参考:
+
+- [https://github.com/langchain-ai/langchain/blob/ced5e7bae790cd9ec4e5374f5d070d9f23d6457b/libs/community/langchain_community/vectorstores/milvus.py#L767](https://github.com/langchain-ai/langchain/blob/ced5e7bae790cd9ec4e5374f5d070d9f23d6457b/libs/community/langchain_community/vectorstores/milvus.py#L767)
+- 核心实现: [https://github.com/langchain-ai/langchain/blob/ced5e7bae790cd9ec4e5374f5d070d9f23d6457b/libs/community/langchain_community/vectorstores/utils.py#L23](https://github.com/langchain-ai/langchain/blob/ced5e7bae790cd9ec4e5374f5d070d9f23d6457b/libs/community/langchain_community/vectorstores/utils.py#L23)
+
+
+```python
+def maximal_marginal_relevance(
+    query_embedding: list[float],
+    embedding_list: list[list[float]],
+    lambda_mult: float = 0.5,
+    k: int = 4,
+) -> List[int]:
+    # query_embedding: shape is [M], query embedding 后的向量
+    # embedding_list: shape is [N, M], 召回的向量, 需要进行重排, 最终返回 k 条
+    
+    # 执行逻辑是维护一个已经挑好的集合 S (元素个数从 0 逐次增加到 k):
+    # 每次从 set([0, ... N-1]) - S 中按如下公式扩充 S: 即考虑与 query 的相关性, 又考虑最终的 k 条数据尽量有多样性
+    # score = lambda_mult * cosine_similarity(query_embedding, x) + (1-lambda_mult) * max_cosine_similarity(x, S)
+    pass
+```

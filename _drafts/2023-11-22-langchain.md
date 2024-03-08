@@ -811,6 +811,8 @@ print_chat_prompt_template(structured_chat_prompt)
 
 [https://python.langchain.com/docs/modules/model_io/llms/custom_llm](https://python.langchain.com/docs/modules/model_io/llms/custom_llm)
 
+官方也提供了一个 FakeListLLM: [https://github.com/langchain-ai/langchain/blob/master/libs/community/langchain_community/llms/fake.py](https://github.com/langchain-ai/langchain/blob/master/libs/community/langchain_community/llms/fake.py)
+
 ```python
 from typing import Any, List, Mapping, Optional, Iterator
 from langchain.callbacks.manager import CallbackManagerForLLMRun
