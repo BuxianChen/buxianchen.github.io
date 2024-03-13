@@ -1593,6 +1593,50 @@ class AsyncCallbackHandler(BaseCallbackHandler):
     - `on_text`: 最重要的入口位于 `LLMChain.prep_prompts` 方法里, 但也有许多具体的类也触发了这个 callback
     - `on_retry`:
 
+### VectorStore
+
+以下是最主要的抽象接口, 简单地说, 需要实现 创建, 增, 删, 查 这几个功能, 而 `as_retriever` 得到的 `VectorStoreRetriever` 继承自 `BaseRetriever`, 其能力完全来自于 `VectorStore`
+
+```python
+# langchain_core/vectorstores.py
+class VectorStore(ABC):
+    # 主要接口
+    @property
+    def embedding(self): ...  # embedding 模型
+    def add_documents(self, documnets: List[Document], ...): ...  # aadd_documents
+    def delete(self, ids, ...): ...  # adelete
+    def search(self, query: str, search_type: str, **kwargs) -> List[Document]: ...  # asearch
+    @classmethod
+    def from_documents(...): ...  # afrom_documents
+    def as_retriever(...) -> VectorStoreRetriever: ...
+
+    # 底层接口, 继承大多需要重写这些底层方法
+    @abstractmethod
+    def add_text(self, texts, metadatas, ...): ...  # aadd_texts
+    @abstractmethod
+    def similarity_search(...): ...
+    def similarity_search_with_score(...): ...  # asimilarity_search_with_score
+    def similarity_search_with_relevance_scores(...): ... # asimilarity_search_with_relevance_scores
+    def max_marginal_relevance_search(...): ... # amax_marginal_relevance_search
+    @classmethod
+    @abstractmethod
+    def from_texts(...):  # afrom_texts
+
+    # 其他接口
+    ...
+```
+
+### Retriever
+
+```python
+class BaseRetriever(RunnableSerializable[RetrieverInput, RetrieverOutput], ABC):
+    def invoke(...): ...  # ainvoke, 在内部调用 get_relevant_documents
+    def get_relevant_documents(...) ...  # aget_relevant_documents, 本质上就是 call hook + _get_relevant_documents
+    
+    # 一般来说自定义只要重载 _get_relevant_documents 即可
+    @abstractmethod
+    def _get_relevant_documents(...): ...  # _aget_relevant_documents
+```
 
 ## LangSmith
 
