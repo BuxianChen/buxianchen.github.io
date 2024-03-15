@@ -13,7 +13,7 @@ labels: [socket, http]
 
 ## socket
 
-以下是一个用于观察请求具体内容的 server 程序
+以下是一个用于观察请求具体内容的 server 程序, 这份代码主要用来观察 requests 库发请求时的 HTTP 头与内容究竟是什么
 
 ```python
 # socket_server.py
@@ -50,6 +50,80 @@ start_server()
 
 注意如果不设置 `conn.settimeout(0.1)`, 当客户端使用 `requests_client.py` 进行请求时, 在数据发送完毕时, 服务端的 `s.accept()` 会一直阻塞, 导致无法 `break`. flask/fastapi 里应该会去从请求里解析 `Content-Length` 等信息来处理 (具体机制不确定)
 
+## HTTP 协议
+
+### body 类型: text, json, form
+
+json, text, form 本质上只是 body 的内容不一样, 且请求头里的 `Content-Type` 字段有所不同, 使用 requests 库发起三种请求的方式为:
+
+```python
+import requests
+import json
+data = {"a": ["abc", "def", {"bec": 1}]}
+response = requests.post(url, data=json.dumps(data))  # text, data 是字符串类型时, 不会设置 header
+response = requests.post(url, json=data)              # json, 会自动设置 header, {"Content-Type": "application/json"}
+response = requests.post(url, data=data)              # form, data 是字典类型时, 会自动设置 header, {"Content-Type": "application/x-www-form-urlencoded"}, 这种情况下 data 不能是过于复杂的结构, 最好就是 Dict[str, str]
+```
+
+请求内容如下:
+
+**text**
+
+```
+POST /upload/ HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: python-requests/2.31.0
+Accept-Encoding: gzip, deflate, br
+Accept: */*
+Connection: keep-alive
+Content-Length: 33
+
+{"a": ["abc", "def", {"bec": 1}]}
+```
+
+**json**
+
+```
+POST /upload/ HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: python-requests/2.31.0
+Accept-Encoding: gzip, deflate, br
+Accept: */*
+Connection: keep-alive
+Content-Length: 33
+Content-Type: application/json
+
+{"a": ["abc", "def", {"bec": 1}]}
+```
+
+**form**
+
+```
+POST /upload/ HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: python-requests/2.31.0
+Accept-Encoding: gzip, deflate, br
+Accept: */*
+Connection: keep-alive
+Content-Length: 17
+Content-Type: application/x-www-form-urlencoded
+
+a=abc&a=def&a=bec
+```
+
+### files
+
+注意: files 只能与表单类型数据共存
+
+```python
+files = [('file', open("a.txt", 'rb'))]
+data = {"a": "1", "b": 2}
+response = requests.post(
+    url,
+    files=files,  # header 会自动设置 {"Content-Type": "multipart/form-data ..."}
+    data=data  # 使用了 files 时, data 只能传字典 (表单类型), 而不能是字符串
+)
+```
 
 ## requests
 
@@ -64,7 +138,7 @@ import requests
 requests.request(
     method="GET",
     url="http://localhost:8000/a/b",
-    params={"q": "1", "r": 23},
+    params={"q": "1", "r": 23},    # 像这样传字典且不加 {"Content-Type": "application/json"} 的 header, 就会被处理成表单
     data={"body-param": "value"},  # 一般不会用于 GET 请求中
     # json={"a": 1, "b": 2},       # 如果同时给 data 和 json, 则会忽略 json 字段.
     headers={"User-Agent": "custom"},
@@ -184,9 +258,13 @@ Content-Type: application/json
 
 遵循 HTTP 协议的文件传输, 服务端用 socket, flask, fastapi 实现, 客户端用 socket, requests 实现. 另外计划附 streamlit 怎么接收上传的文件
 
-### 客户端
+### 服务端
 
-(https://zhuanlan.zhihu.com/p/265815118)[https://zhuanlan.zhihu.com/p/265815118]
+- socket: TODO
+- flask: TODO
+- fastapi: 见另一篇关于 pydantic 和 fastapi 的博客
+
+### 客户端
 
 **例子**
 
@@ -198,7 +276,6 @@ url = 'http://127.0.0.1:8000/upload/'
 with open("a.txt", 'rb') as f:
     files = [('file', f)]  # "file" 不是固定的字段名
     response = requests.post(url, files=files, data={"a": "123"})
-print(f"SHA256 Hash: {response.text}")
 ```
 
 注意在这个情形下, `Content-Length=1450`, `content[-1450:] = "--ef0...."`
