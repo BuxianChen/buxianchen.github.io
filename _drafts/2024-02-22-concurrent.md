@@ -199,7 +199,282 @@ if __name__ == '__main__':
 
 上面的例子中, 直到主线程将 `event` 设置为 `True` 时, 两个子线程才继续执行下去.
 
+### Lock, RLock
+
+锁对象必须是同一个, 且必须是多个线程共享, 多个线程修改的对象是同一个.
+
+```python
+# tlock.py
+import threading
+import time
+
+# 共享变量
+shared_variable = 0
+lock = threading.Lock()
+rlock = threading.RLock()
+
+def thread_with_lock(op, name):
+    global shared_variable
+    for _ in range(1000):
+        lock.acquire()
+        try:
+            if op == "add":
+                shared_variable += 1
+            elif op == "sub":
+                shared_variable -= 1
+            else:
+                raise ValueError("")
+            time.sleep(0.001)
+        finally:
+            lock.release()
+
+def thread_with_rlock(op, name):
+    global shared_variable
+    for i in range(1000):
+        rlock.acquire()
+        try:
+            if op == "add":
+                temp = shared_variable + 1
+            elif op == "sub":
+                temp = shared_variable - 1
+            else:
+                raise ValueError("")
+            if (i+1) % 200 == 0: print(name, i+1, shared_variable)
+            time.sleep(0.001)   # 模拟修改过程要耗费一些时间, 这样子如果不加 lock 的话, 最后的 shared_variable 很可能不是 0
+            shared_variable = temp
+        finally:
+            rlock.release()
+
+t1 = threading.Thread(target=thread_with_rlock, args=("add", "thread-1"))
+t2 = threading.Thread(target=thread_with_rlock, args=("sub", "thread-2"))
+
+start_time = time.time()
+t1.start()
+t2.start()
+t1.join()
+t2.join()
+end_time = time.time()
+
+print("Final value of shared_variable:", shared_variable)
+print(f"耗时: {end_time - start_time} 秒")
+```
+
+使用 `python -u tlock.py` 输出:
+
+```
+thread-1 200 200
+thread-1 400 400
+thread-1 600 572
+thread-2 200 597
+thread-2 400 397
+thread-1 800 271
+thread-1 1000 471
+thread-2 600 400
+thread-2 800 200
+thread-2 1000 0
+Final value of shared_variable: 0
+耗时: 2.4496095180511475 秒
+```
+
+#### Lock vs RLock
+
+RLock 有 Python 的实现: `threading.py:_RLock`, 它的 `__init__` 函数 (python=3.9) 如下:
+
+注意: 正常情况下, `threading.RLock` 不会指向 python 的实现 `threading.py:_RLock`, 但它们是兼容的, 只是便于分析
+
+```python
+class _RLock:
+    def __init__(self):
+        self._block = _allocate_lock()  # 这个实际上就是 self._block = Lock()
+        self._owner = None      # _owner 是一个整数值, 代表线程id
+        self._count = 0
+    def acquire(self, blocking=True, timeout=-1):
+        me = get_ident()   # 获取当前线程 id
+        if self._owner == me:  # _owner 记录了当前是哪个 thread 最初获取的本 RLock, 可重复获取 RLock, 但后面也要释放同样次数的 RLock
+            self._count += 1
+            return 1
+        rc = self._block.acquire(blocking, timeout)
+        if rc:
+            self._owner = me
+            self._count = 1
+        return rc
+    __enter__ = acquire  # __enter__ 与 __exit__ 用于实现 with 语句
+    def release(self):
+        if self._owner != get_ident():
+            raise RuntimeError("cannot release un-acquired lock")
+        self._count = count = self._count - 1
+        if not count:    # count = 0 时释放内部的 Lock 对象 
+            self._owner = None
+            self._block.release()
+    def __exit__(self, t, v, tb):
+        self.release()
+    # 其余方法: ...
+```
+
+什么时候用 RLock, 什么时候用 Lock 呢? [https://stackoverflow.com/questions/16567958/when-and-how-to-use-pythons-rlock](https://stackoverflow.com/questions/16567958/when-and-how-to-use-pythons-rlock), 以下是上面问答里的一个例子
+
+```python
+import threading
+class X:
+    def __init__(self):
+        self.a = 1
+        self.b = 2
+        self.lock = threading.RLock()
+
+    def changeA(self):
+        with self.lock:  # 如果 self.lock 是 Lock 而不是 RLock, 则从 changeAandB 进到这里时会被堵住
+            self.a = self.a + 1
+
+    def changeB(self):
+        with self.lock:
+            self.b = self.b + self.a
+
+    def changeAandB(self):
+        # you can use chanceA and changeB thread-safe!
+        with self.lock:
+            self.changeA() # a usual lock would block at here
+            self.changeB()
+
+x = X()
+x.changeAandB()
+```
+
+在这个例子里, 我们希望 `X` 类能分别提供线程安全的修改 `a`, `b` 以及按次序修改 `a` 和 `b` 的接口
+
+如果这里的实现 `self.lock` 是 `Lock` 而不是 `RLock`, 那么整个程序会在 `changeAandB` 在调用 `changeA` 时会被堵塞住, 导致程序无法结束 (死锁). 而此处使用的是 `RLock`, 则会检查 lock 属于本线程, 进入 `changeA` 时不会堵住
+
+
+#### Lock in FastAPI
+
+注意: 尚不确定 `asyncio.Lock` 与 `threading.Lock` 应该用哪个
+
+服务端
+
+```python
+# server.py
+from fastapi import FastAPI
+import time
+import threading
+
+app = FastAPI()
+
+a = 1
+lock = threading.Lock()
+
+@app.get("/modify")
+def modify():
+    global a, lock
+    with lock:
+        temp = a + 1
+        time.sleep(0.1)
+        a = temp
+        time.sleep(0.1)
+        a -= 1
+    return {"temp": a}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
+```
+
+客户端
+
+```python
+# client.py
+import requests
+import threading
+
+def foo(name):
+    res = requests.get("http://127.0.0.1:8000/modify")
+    print(name, res.json())
+
+threads = []
+for i in range(10):
+    threads.append(threading.Thread(target=foo, args=(f"thread-{i}",)))
+
+for t in threads:
+    t.start()
+
+for t in threads:
+    t.join()
+```
+
+输出 (注意不加lock返回结果将不是这样):
+
+```
+thread-2 {'temp': 1}
+thread-0 {'temp': 1}
+thread-1 {'temp': 1}
+thread-3 {'temp': 1}
+thread-4 {'temp': 1}
+thread-5 {'temp': 1}
+thread-7 {'temp': 1}
+thread-6 {'temp': 1}
+thread-8 {'temp': 1}
+thread-9 {'temp': 1}
+```
+
+
 ## multiprocessing
+
+### Lock
+
+```python
+# plock.py
+import multiprocessing
+import time
+
+# 共享变量
+shared_variable = multiprocessing.Value('i', 0)
+lock = multiprocessing.Lock()
+
+def process_with_lock(op, name):
+    global shared_variable
+    for i in range(1000):
+        lock.acquire()
+        try:
+            if op == "add":
+                temp = shared_variable.value + 1
+            elif op == "sub":
+                temp = shared_variable.value - 1
+            else:
+                raise ValueError("")
+            time.sleep(0.001)
+            shared_variable.value = temp
+            if (i+1) % 200 == 0: print(name, i+1, shared_variable.value)
+        finally:
+            lock.release()
+
+p1 = multiprocessing.Process(target=process_with_lock, args=("add", "process-1"))
+p2 = multiprocessing.Process(target=process_with_lock, args=("sub", "process-2"))
+
+start_time = time.time()
+p1.start()
+p2.start()
+p1.join()
+p2.join()
+end_time = time.time()
+
+print("Final value of shared_variable:", shared_variable.value)
+print(f"耗时: {end_time - start_time} 秒")
+```
+
+使用 `python -u plock.py` 输出:
+
+```
+process-1 200 200
+process-1 400 400
+process-1 600 600
+process-1 800 800
+process-2 200 719
+process-2 400 519
+process-2 600 319
+process-2 800 119
+process-1 1000 66
+process-2 1000 0
+Final value of shared_variable: 0
+耗时: 2.5805752277374268 秒
+```
 
 ### Process 源码
 
