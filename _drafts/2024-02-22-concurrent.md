@@ -414,6 +414,51 @@ thread-8 {'temp': 1}
 thread-9 {'temp': 1}
 ```
 
+### ThreadPoolExecutor
+
+```python
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
+
+def run_in_thread_pool(func, params):
+    tasks = []
+    with ThreadPoolExecutor() as pool:
+        for kwargs in params:
+            thread = pool.submit(func, **kwargs)
+            tasks.append(thread)
+
+        for obj in as_completed(tasks):
+            yield obj.result()
+
+def foo(t, name):
+    time.sleep(t)
+    return t, name
+
+results = run_in_thread_pool(foo, [
+    {"t": 7, "name": "thread_1"},
+    {"t": 3, "name": "thread_2"},
+    {"t": 4, "name": "thread_3"},
+    {"t": 5, "name": "thread_4"},
+    {"t": 1, "name": "thread_5"},
+])
+
+start_time = time.time()
+for result in results:
+    print(result)
+end_time = time.time()
+print(f"total time: {end_time - start_time}s")
+```
+
+输出:
+
+```
+(1, 'thread_5')
+(3, 'thread_2')
+(4, 'thread_3')
+(5, 'thread_4')
+(7, 'thread_1')
+total time: 7.008014678955078s
+```
 
 ## multiprocessing
 

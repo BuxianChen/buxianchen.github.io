@@ -113,3 +113,75 @@ python startup.py -a  # 也即 --all-webui
 ## `web_pages/`
 
 ## `server/`
+
+### ThreadSafeObject, CachePool
+
+关系如下:
+
+```
+        ThreadSafeObject    --------- Contains ------->      CachePool    ------- Contains ----->  _cache: OrderedDict(str, ThreadSafeObject)
+                |                                                  /  \
+                |                                                 /    \
+          ThreadSafeFaiss                             EmbeddingPool    _FaissPool
+                                                                          / \
+                                                                         /   \
+                                                            MemoFaissPool   KBFaissPool
+                                                      (memo_faiss_pool)    (kb_faiss_pool)
+```
+
+- `server/knowledge_base/kb_cache/faiss_cache.py`:  全局变量 `memo_faiss_pool`, `kb_faiss_pool`, 类: `ThreadSafeFaiss`, `MemoFaissPool`, `KBFaissPool`
+- `server/knowledge_base/`
+
+
+
+以下是一个简化版的 `ThreadSafeObject`
+
+```python
+import threading
+from contextlib import contextmanager
+import time
+
+class ThreadSafeObj:
+    def __init__(self, obj):
+        self.obj = obj
+        self.lock = threading.RLock()
+
+    @contextmanager
+    def acquire(self):
+        try:
+            self.lock.acquire()
+            yield self.obj
+        finally:
+            self.lock.release()
+
+def do_op(op, name):
+    global thread_safe_obj
+    with thread_safe_obj.acquire():
+        if op == "add":
+            temp = thread_safe_obj.obj + 1
+        elif op == "sub":
+            temp = thread_safe_obj.obj - 1
+        else:
+            raise ValueError("")
+        time.sleep(0.01)
+        thread_safe_obj.obj = temp
+        k = int(name.split("_")[1]) + 1
+        if k % 20 == 0:
+            print(thread_safe_obj.obj, name)
+
+if __name__ == "__main__":
+    thread_safe_obj = ThreadSafeObj(0)
+    threads = []
+    for i in range(200):
+        if i % 2 == 0:
+            threads.append(threading.Thread(target=do_op, args=("add", f"add_{i//2}")))
+        else:
+            threads.append(threading.Thread(target=do_op, args=("sub", f"sub_{i//2}")))
+
+    for t in threads:
+        t.start()
+
+    for t in threads:
+        t.join()
+    print("finished:", thread_safe_obj.obj)
+```

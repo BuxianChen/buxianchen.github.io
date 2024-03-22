@@ -335,6 +335,8 @@ p.preprocessor.label_list  # ['B-EOP', 'O']
 - langchain: `langchain_community.document_loaders.unstructured.UnstructuredFileLoader` 使用 unstructured 包来作为无结构化文件的加载器
 - langchain-chatchat: [ppt, image, pdf, doc](https://github.com/chatchat-space/Langchain-Chatchat/tree/1fa714ee71940a25818c72b3e663d05ff9b3b19d/document_loaders) 里的无结构文件加载器也是使用 unstructured 包
 
+### 例子 1
+
 ```python
 # 见前面 rapidocr 的例子
 # 注意此处会下载 nltk 的模型: tokenizers/punkt.zip 与 taggers/averaged_perceptron_tagger.zip
@@ -364,4 +366,20 @@ result = partition_text(text=text)
 text = "\t".join([r[1] for r in result])
 result = partition_text(text=text)
 # result: [<unstructured.documents.elements.NarrativeText at 0x7f3fbc816190>]
+```
+
+### 例子 2:
+
+```python
+from langchain_community.document_loaders import UnstructuredFileLoader
+from langchain_core.documents.base import Document
+
+loader = UnstructuredFileLoader(
+    file_path="quant_methods_compare.py",  # https://github.com/BuxianChen/snippet/blob/master/quantization/quant_methods_compare.py
+    autodetect_encoding=True,
+    mode="elements",  # "single", "paged", "elements", 默认是 single, single 模式下一个文件就是一个 document
+)
+
+docs: List[Document] = loader.load()  # 会自动把多行合并为一个document
+len(docs)  # 53
 ```
