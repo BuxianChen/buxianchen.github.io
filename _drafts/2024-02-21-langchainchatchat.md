@@ -103,12 +103,65 @@ python startup.py -a  # 也即 --all-webui
 
 其他参数
 
-- `--lite`: 待研究
+- `--lite`: 将 `model_worker` 指定为 `False`, 表示不需要加载本地模型, 参考[文档](https://github.com/chatchat-space/Langchain-Chatchat/wiki/%E5%BC%80%E5%8F%91%E7%8E%AF%E5%A2%83%E9%83%A8%E7%BD%B2)通常用法为
+  ```bash
+  python startup.py -a --lite  # 启动 controller, openai-api 接口格式的接口, 外部模型(需要API KEY的那种模型), 向量库/对话管理/知识管理等, streamlit 前端 UI 服务
+  ```
 - `--model-name`: 指定模型名
-- `--controller`: 大概跟 fastchat 有关
+- `--controller`: 跟 fastchat 有关
 - `--quiet`: 减少 fastchat 的日志输出
 
-`startup.py` 重点 (如果不关注本地模型启动的话) 只在于 `run_api_server` 与 `run_webui` 方法, 前者定义了许多 chain 的接口, 后者实际上起了个 `streamlit run webui.py ...` 的子进程. 可以先从 webui 看起
+`startup.py` 重点 (如果不关注本地模型启动的话) 只在于 `run_api_server` 与 `run_webui` 方法, 前者定义了许多 chain 的接口, 后者实际上起了个 `streamlit run webui.py ...` 的子进程.
+
+
+```python
+# 以下不完全遵循原始实现, 仅说明其架构
+# startup.py
+def run_controller(...):
+    app = create_controller_app(...)
+    uvicorn.run(port=FSCHAT_CONTROLLER["post"], ...)  # 20001 端口
+
+def run_model_worker(model_name, ...):
+    app = create_worker_app(model_name)
+    # 本地模型占同一个端口: 20002, 其他线上的模型是不同的端口, 例如: qwen_api: 21006, gemini-api: 21010
+    uvicorn.run(port=port, ...)
+
+def run_openai_api():
+    app = create_openai_app()
+    uvicorn.run(port=FACHAT_OPENAI_API["port"], ...)  # 20000 端口
+
+def run_api_server():
+    from api import create_app
+    app = create_app()
+    uvicorn.run(port=API_SERVER["port"], ...)   # 7861 端口, 包含知识库管理/LangChain对话的后台接口
+
+def run_webui():
+    subprocess.Popen("streamlit run webui.py")
+
+processes = {"online_api": [], "model_worker": []}
+
+if args.openai_api:
+    processes["controller"] = Process(target=run_controller, ...)
+    processes["openai_api"] = Process(target=run_openai_api, ...)
+
+if args.model_worker:  # 设置为lite时会关闭这个
+    for model_name in args.model_name:
+        if model_name in local_models:
+            process = Process(target=run_model_worker, kwargs={"model_name": model_name})
+            processes["model_worker"].append(process)
+if args.api_worker:
+    for model_name in args.model_name:
+        if model_name not in local_models:
+            process = Process(target=run_model_worker, kwargs={"model_name": model_name})
+            processes["online_api"].append(process)
+if args.api:
+    processes["api"] = Process(run_api_server, ...)
+
+if args.webui:
+    processes["webui"] = Process(run_webui, ...)
+
+# start all Process in processes
+```
 
 ## `web_pages/`
 
