@@ -102,3 +102,40 @@ streamlit 的表格操作
 - 增加/删除列: streamlit 似乎不支持
 - 公式计算: 不支持
 - 筛选取值在一个列表内的数据: 不支持
+
+### dataframe
+
+静态的表格展示用 `st.dataframe`, 动态的表格展示用 `sr.data_editor`, 更复杂可使用 `st_aggrid.AgGrid`
+
+```python
+import pandas as pd
+import streamlit as st
+from uuid import uuid4
+
+df = pd.DataFrame(
+    [
+        {"command": "st.selectbox", "rating": 4, "is_widget": True, "uuid": str(uuid4())},
+        {"command": "st.balloons", "rating": 5, "is_widget": False, "uuid": str(uuid4())},
+        {"command": "st.time_input", "rating": 3, "is_widget": True, "uuid": str(uuid4())},
+    ]
+)
+
+df = df[["command", "rating", "is_widget"]]
+
+st.write("原始数据")
+st.dataframe(df)
+st.write("修改的数据")
+# 注意: 每次对 data_editor 中的数据进行修改时
+edited_df = st.data_editor(df, key="changed")  # edited_df 也是 dataframe 类型
+
+favorite_command = edited_df.loc[edited_df["rating"].idxmax()]["command"]
+st.markdown(f"Your favorite command is **{favorite_command}** 🎈")
+
+st.write("原始数据")
+st.write(df.to_dict("records"))
+st.write("修改后的数据")
+st.write(edited_df.to_dict("records"))
+
+st.write(st.session_state["changed"])  # 仅包含被修改的行, 具体可参考官方文档
+print(f"pass {uuid4()}")
+```
