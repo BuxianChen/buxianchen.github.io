@@ -139,3 +139,99 @@ st.write(edited_df.to_dict("records"))
 st.write(st.session_state["changed"])  # 仅包含被修改的行, 具体可参考官方文档
 print(f"pass {uuid4()}")
 ```
+
+#### streamlit-aggrid
+
+版本
+
+```
+streamlit==1.32.2
+streamlit-aggrid==0.3.4
+```
+
+代码
+
+```python
+import streamlit as st
+from st_aggrid import AgGrid, GridOptionsBuilder
+import pandas as pd
+from uuid import uuid4
+
+print("run head")
+
+df = pd.DataFrame(
+    {
+        "col1": ["1", "2", "3"],
+        "col2": [4, 5, 6],
+    }
+)
+def get_grid_options(df):
+    options_builder = GridOptionsBuilder.from_dataframe(df)
+    options_builder.configure_column('col1', editable=True)
+    options_builder.configure_selection("single")
+    grid_options = options_builder.build()
+    return grid_options
+grid_options = get_grid_options(df)
+reload_data = False
+flag = st.button("reset")  # 用于将修改的表格恢复为原始的数据
+if flag:
+    reload_data = True
+else:
+    reload_data = False
+
+grid_return = AgGrid(
+    df,
+    grid_options,
+    reload_data=reload_data,
+)
+
+st.write(grid_return.data)
+
+print(f"button state {flag}")
+print(f"run bottom: {uuid4()}")
+```
+
+前端与后端的交互逻辑:
+
+```
+# 打开网页 http://localhost:8501
+run head
+button state False
+run bottom: 37f1501e-55d1-4de1-950e-30421f9194ce
+# 单击表格的某一行
+run head
+button state False
+run bottom: d6c89417-6006-42e2-86fe-ffee6732d618
+# 双击修改之前单击的这一行的某个单元格并保存修改
+run head
+button state False
+run bottom: a178a794-adda-4a57-a040-ff81ce47e660
+# 单击 reset 按钮, 注意此次 rerun, flag 是 True
+run head
+button state True
+run bottom: 7c8e5bcb-4b64-42c3-b9a8-e8bdb5222892
+# 单机一个可修改按钮, 注意此次 rerun, flag 恢复为了 False
+run head
+button state False
+run bottom: 54cd6c45-a645-40b0-bc1f-b1331e3ac158
+```
+
+如果需要把按钮放在后边, 实现如下 (TODO: 还有 BUG, 点击按钮复原后, 再选中某行时会触发两次 rerun 而不是一次)
+
+```python
+# ...
+def reload_data_fn():
+    st.session_state['reload'] = True
+reload_data = st.session_state.get("reload", False)
+print(f"reload_data: {reload_data}")
+
+grid_return = AgGrid(df, grid_options, reload_data=reload_data)
+st.session_state['reload'] = False
+
+st.write(grid_return.data)
+# 此处如果用下面这种方式的话
+# if st.button("reset"):
+#     st.session_state["reload"]=True
+# 会直接触发一次 rerun, 而在这次 rerun 中, 上面的 reload_data 仍然是 False, 运行至下面时才会将 st.session_state["reload"] 置为 True, 导致无法进行复原 (除非再点击一次按钮)
+st.button("reset", on_click=reload_data_fn)
+```
