@@ -236,6 +236,84 @@ st.write(grid_return.data)
 st.button("reset", on_click=reload_data_fn)
 ```
 
+一个完美的解决方案如下 (`reload_data` 总是保持为 `False`, 但点击复原按钮时给 `AgGrid` 一个新的 `key`, 参考下一节):
+
+```python
+import streamlit as st
+import pandas as pd
+from st_aggrid import AgGrid, GridOptionsBuilder
+from uuid import uuid4
+
+rerun_id = str(uuid4())
+print("start", rerun_id)
+
+df = pd.DataFrame(
+    {
+        "col1": ["1", "2", "3"],
+        "col2": ["4", "5", "6"],
+    }
+)
+
+def get_grid_options(df):
+    options_builder = GridOptionsBuilder.from_dataframe(df)
+    options_builder.configure_column('col1', editable=True)
+    options_builder.configure_selection("single")
+    grid_options = options_builder.build()
+
+    return grid_options
+
+grid_options = get_grid_options(df)
+
+key = st.session_state.get("key", str(uuid4()))
+st.session_state["key"] = key
+
+grid_return = AgGrid(
+    df,
+    grid_options,
+    key=key,
+)
+
+st.write(grid_return.data)
+
+def reload_data_fn():
+    st.session_state['key'] = str(uuid4())
+
+st.button("reset", on_click=reload_data_fn)
+st.write(grid_return.selected_rows)
+
+print("end", rerun_id)
+```
+
+
+### file_uploader
+
+`file_uploader` 在交互层面上只允许两种操作: 上传一个或多个文件 (上传多个文件只触发一次 rerun), 删除一个上传的文件. 如果上传的文件与已有文件相同, 不做任何校验, 直接重复上传 (例如先上传了 3 个文件, 然后再一次性上传同样的 3 个文件, 那么上传列表将变成 6 个).
+
+想实现这种效果做不到: 用户上传了 3 个文件时, 处理完其中一个文件 (例如将 3 个文件信息用 AgGrid 选中), 然后点击按钮希望从上传列表里删除这个文件, 使得上传列表只剩下 2 个文件. 原因是不能预先设置 `st.session_state` 用于 `file_uploader` 组件:
+
+参考这个问答: [https://discuss.streamlit.io/t/streamlitapiexception-values-for-st-data-editor-cannot-be-set-using-st-session-state-using-data-editor-to-delete-rows/46759/4](https://discuss.streamlit.io/t/streamlitapiexception-values-for-st-data-editor-cannot-be-set-using-st-session-state-using-data-editor-to-delete-rows/46759/4):
+
+```
+Values for st.button, st.download_button, st.file_uploader, st.data_editor, st.chat_input, and st.form cannot be set using st.session_state.
+```
+
+但是可以做到清空上传的文件
+
+```python
+import streamlit as st
+from uuid import uuid4
+
+upload_key = st.session_state.get("upload_key", str(uuid4()))
+st.session_state["upload_key"] = upload_key
+
+files = st.file_uploader("上传文件", accept_multiple_files=True, key=upload_key)
+
+def delete_on_click():
+    st.session_state["upload_key"] = str(uuid4())
+
+st.button("清空上传的文件", on_click=delete_on_click)
+```
+
 
 ## 组件生命周期 (TODO: 重新措辞)
 
