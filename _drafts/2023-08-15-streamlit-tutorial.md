@@ -216,7 +216,7 @@ button state False
 run bottom: 54cd6c45-a645-40b0-bc1f-b1331e3ac158
 ```
 
-如果需要把按钮放在后边, 实现如下 (TODO: 还有 BUG, 点击按钮复原后, 再选中某行时会触发两次 rerun 而不是一次)
+如果需要把按钮放在后边, 实现如下 (TODO: 还有 BUG, 点击按钮复原后, 再选中某行时会触发触发一次 rerun, 但行不被选中, 再选中时, 会再触发一次 rerun, 行也被选中)
 
 ```python
 # ...
@@ -234,4 +234,101 @@ st.write(grid_return.data)
 #     st.session_state["reload"]=True
 # 会直接触发一次 rerun, 而在这次 rerun 中, 上面的 reload_data 仍然是 False, 运行至下面时才会将 st.session_state["reload"] 置为 True, 导致无法进行复原 (除非再点击一次按钮)
 st.button("reset", on_click=reload_data_fn)
+```
+
+
+## 组件生命周期 (TODO: 重新措辞)
+
+主要参考: [https://docs.streamlit.io/library/advanced-features/widget-behavior](https://docs.streamlit.io/library/advanced-features/widget-behavior)
+
+与组件交互时:
+
+- 先修改 st.session_state
+- 然后 callback 函数
+- 最后 rerun, rerun 过程时会再依次确定每个组件是否重新构建, 是否使用 `st.session_state` 中的值.
+
+在 rerun 时, 如果 rerun 时的 widget (组件) 与上次的是使用相同的 `label`, `key`, 以及参数 时 (这是通常情况, 例如: `st.slider("A", 1, 10, key="slider_a")`), 通常可以保留状态 (key 不设置也能保留状态, 只是不会被保留在 `st.session_state["slider_a"]` 中).
+
+然而某些情况下, rerun 会改变 `label`, `key` 或参数 (最常见的是改变参数 `st.slider` 的最大值和最小值, 但下面的例子是改变 `label`), 保留状态会有些 tricky.
+
+```python
+import streamlit as st
+from uuid import uuid4
+
+def change_value():
+    print(st.session_state["slider_value"])
+    # 将以下注释掉的话: 每次与 slider 交互时, slider 的值都会被复原为默认值 1
+    st.session_state["slider_value"] = st.session_state["slider_value"]
+
+st.slider(
+    str(uuid4()), 1, 10,
+    on_change=change_value,
+    key="slider_value",
+)
+```
+
+- 打开页面时, 先构建前端的滑动条: 由于此时设置了 `key="slider_value`, 所以先搜索 `st.session_state['slider_value']`, 此时这个值没有被设置, 因此滑动条使用默认值 `min_value=1`, 并设置 `st.session_state['slider_value']=1`. (先设置 `st.session_state` 还是先构建完前端组件不清楚)
+- 当前端与滑动条交互时 (例如将值修改为 4), 先将 `st.session_state['slider_value']=4`, 然后触发 callback 函数 `change_value`, 然后进行 rerun, 在执行至 `st.slider` 这一行时, 有如下比较 tricky 的地方
+  - 由于本次 slider 的 ID 与上次的不同 (因为 label 不同导致 ID 不同, 只要 ID 不同就只能重新构造, ID 基于label, 参数例如 `min_value`, key), 所以会将上次的 slider 销毁掉, 同时会清除掉 `st.session_state["slider_value"]`, 由于此时 `slider_value` 被绑在了上一次运行时的 slider 上, 因此 `slider_value` 也会被销毁, 接下来在本次构造 slider 时重新生成新的 `slider_value`
+  - 而如果取消上面的注释行, 行为会变成销毁并重新创建 slider, 但由于 `slider_value` 被重新赋了值, 因此解绑了, 所以这种情况下新构造的 slider 会使用之前的 `st.session_state["slider_value"]`
+
+```python
+# 另一种方式: 官方文档上的写法实际上稍有错误
+import streamlit as st
+from uuid import uuid4
+
+rerun_id = uuid4()
+print("start", rerun_id, st.session_state)
+
+def save_value(key):
+    st.session_state[key] = st.session_state["_"+key]
+def get_value(key):
+    st.session_state["_"+key] = st.session_state.get(key, 1)
+
+get_value("slider_value")
+st.slider(
+    str(uuid4()), 1, 10,
+    key="_slider_value",
+    on_change=save_value,
+    args=("slider_value",)
+)
+
+print("end", rerun_id, st.session_state)
+```
+
+关于以上, 这里引用官方文档的描述 [https://docs.streamlit.io/library/advanced-features/widget-behavior#widget-life-cycle](https://docs.streamlit.io/library/advanced-features/widget-behavior#widget-life-cycle), 并附注释
+
+```
+Calling a widget function when the widget doesn't already exist
+
+If your script rerun calls a widget function with changed parameters or calls a widget function that wasn't used on the last script run:
+(上面的例子中 st.slider 的 label 使用 uuid4 来生成, 就是这种情况)
+
+1. Streamlit will build the frontend and backend parts of the widget.
+(widget的前后端构造过程在执行 st.slider 这一行内发生的. 所谓后端, 应该是指前端实际上用的是 iframe, 实际上是需要先完成后端, 再嵌入至前端, 不太确定?)
+2. If the widget has been assigned a key, Streamlit will check if that key already exists in Session State.
+    a. If it exists and is not currently associated with another widget, Streamlit will attach to that key and take on its value for the widget.
+    (假设在 callback 函数 change_value 中有 st.session_state["slider_value"] = st.session_state["slider_value"] 这一行, 那么 slider_value 就被 deattach 了, 那么这次构造 slider 时, 就会使用到当前的 st.session_state["slider_value"])
+    b. Otherwise, it will assign the default value to the key in st.session_state (creating a new key-value pair or overwriting an existing one).
+    (假设 st.session_state["slider_value"] 没有被重新赋值, 那么 slider_value 就还是被 attach 在之前的 slider 上, 那么此次构造 slider 时会覆盖掉之前的 slider_value)
+3. If there are args or kwargs for a callback function, they are computed and saved at this point in time.
+4. The default value is then returned by the function.
+
+Step 2 can be tricky. If you have a widget:
+
+st.number_input("Alpha", key="A")
+
+and you change it on a page rerun to:
+
+st.number_input("Beta", key="A")
+
+Streamlit will see that as a new widget because of the label change. The key "A" will be considered part of the widget labeled "Alpha" and will not be attached as-is to the new widget labeled "Beta". Streamlit will destroy st.session_state.A and recreate it with the default value.
+
+If a widget attaches to a pre-existing key when created and is also manually assigned a default value, you will get a warning if there is a disparity. If you want to control a widget's value through st.session_state, initialize the widget's value through st.session_state and avoid the default value argument to prevent conflict.
+(
+    这一句话实际上与组件的生命周期无关, 这里所谓的 warning 是指如果这么写代码:
+    st.session_state["slider_value"] = 5
+    st.slider("slider_label", 1, 10, value=3, key="slider_value")
+    这里的 3 就是 default value, 它与手动赋值 5 有冲突, 这种情况下会以 5 为准, 前端界面上会报一次 warning, 官方建议如果是这种情况, 就要避免使用默认值 value=3.
+)
 ```
