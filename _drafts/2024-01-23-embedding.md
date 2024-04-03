@@ -197,3 +197,48 @@ reranking tokenizer:
 text: a, token_ids: [0, 10, 2], tokens: ['<s>', '▁a', '</s>']
 text pair: ['a', 'b'], token_ids: [0, 10, 2, 2, 876, 2], tokens: ['<s>', '▁a', '</s>', '</s>', '▁b', '</s>']
 ```
+
+### FlagEmbedding: bge-m3
+
+```python
+# B: batch size, L: 序列长度, C: 隐层输出, V: vocab_size
+B, L, C, V = 2, 4, 3, 5
+# hidden_state: (B, L, C)
+
+################ dense_embedding ######################
+# 使用 CLS token
+dense_embedding = hidden_state[:, 0]  # (B, C)
+
+################ sparse_embedding ######################
+
+input_ids = torch.tensor([[1, 1, 2, 2], [1, 3, 3, 0]])
+sparse_embedding = torch.zeros(B, L, V)
+sparse_linear = torch.nn.Linear(C, 1)
+token_weight = sparse_linear(hidden_state)
+# token_weight: (B, L, 1)
+# [
+#     [[0.6152], [0.6736], [0.0937], [0.3646]],
+#     [[0.5414], [0.3734], [0.0577], [0.0790]]
+# ]
+
+sparse_embedding = torch.scatter(sparse_embedding, dim=-1, index=input_ids.unsqueeze(-1), src=token_weights)
+# sparse_embedding: (B, L, V)
+# [
+#     [[0, 0.6152, 0, 0, 0],
+#     [0, 0.6736, 0, 0, 0],
+#     [0, 0, 0.0937, 0, 0],
+#     [0, 0, 0.3646, 0, 0]],
+
+#     [[0, 0.5414, 0, 0, 0],
+#     [0, 0, 0, 0.3734, 0],
+#     [0, 0, 0, 0.0577, 0],
+#     [0.0790, 0, 0, 0, 0]],
+# ]
+
+sparse_embedding = torch.max(sparse_embedding, dim=1).values  # (B, V)
+# sparse_embedding: [[0, 0.6736, 0.3646, 0, 0], [0.0790, 0.5414, 0, 0.3734, 0]]
+unused_tokens = [0, 4]  # cls_token_id, eos_token_id, pad_token_id, unk_token_id
+sparse_embedding[:, unused_tokens] *= 0
+
+################ colbert_embedding: TODO ######################
+```
