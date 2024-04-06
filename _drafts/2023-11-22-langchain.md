@@ -91,7 +91,7 @@ chain.middle # [llm]
 chain.steps  # [prompt, llm, output_parser]
 ```
 
-### 例子 2 (模型自定义, langserver)
+### 例子 2 (模型自定义, langserve)
 
 ```bash
 pip install langchain langserve sse_starlette
@@ -1080,7 +1080,7 @@ prompt.__class__.stream is Runnable.stream  # True, 但这个实现就只是 yie
 ```python
 # 必须先 configurable_fields 或 configurable_alternatives, 再使用 with_config
 runnable = runnable.configurable_fields(...)  # 不同的 runnable 有不同的可设置 key, key 不能乱配
-runnable = runnbale.configurable_alternatives(...)  # 配置可以替换整个runnable为其他runnable
+runnable = runnable.configurable_alternatives(...)  # 配置可以替换整个runnable为其他runnable
 runnable.with_config(configurable={"foo": 0.9})
 ```
 
@@ -1088,6 +1088,7 @@ runnable.with_config(configurable={"foo": 0.9})
 
 ```python
 from langchain.prompts import PromptTemplate
+from langchain_core.runnables.configurable import ConfigurableField
 runnable = PromptTemplate.from_template("This is history: {history}, This is content: {content}")
 runnable = runnable.configurable_fields(template=ConfigurableField(id="custom_template"))  # "template" in runnable.__fields__.keys()
 runnable.with_config(configurable={"custom_template": "{history} {content}"}).invoke({"history": "1", "content": "2"})
@@ -1115,6 +1116,8 @@ prompt.invoke({"topic": "book"}, config={"configurable": {"prompt_choice": "poem
 ```python
 from langchain.prompts import PromptTemplate
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+from langchain_core.runnables.configurable import ConfigurableField
+
 runnable = PromptTemplate.from_template("This is history: {history}, This is content: {content}")
 runnable2 = PromptTemplate.from_template("context: {context}")
 params = {"history": "1", "content": "2"}
@@ -1133,6 +1136,86 @@ chain.with_config(
         "custom_template2": "custom_template2 {context}"
     }
 ).invoke(params)
+```
+
+**一个与 langserver 结合的例子**
+
+```python
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
+from typing import List
+from langchain.tools.retriever import create_retriever_tool
+from langchain_core.runnables.configurable import ConfigurableField
+
+
+class CustomRetriever(BaseRetriever):
+    prefix: str = "retriever"
+    k: int = 4
+    method: str = "L2"
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> List[Document]:
+        return [Document(page_content=doc) for doc in [f"{self.prefix}: {query}-{self.k}-{self.method}"]]
+
+fake_retriever = CustomRetriever()
+configurable_fake_retriever = fake_retriever.configurable_fields(
+    prefix=ConfigurableField(id="retriever_prefix"),
+    k=ConfigurableField(id="retriever_k"),
+    method=ConfigurableField(id="retriever_method"),
+)
+# configurable_fake_retriever.invoke(input="bar")
+
+
+from langchain.prompts import PromptTemplate
+prompt = PromptTemplate.from_template("This is history: {history}, This is content: {content}")
+
+configurable_prompt = prompt.configurable_alternatives(
+    ConfigurableField(id="prompt_choice"),
+    default_key="default",
+    kv=PromptTemplate.from_template("{history}: {content}"),
+)
+
+# configurable_prompt.invoke({"history": "h", "content": "c"})
+
+chain = (configurable_prompt | configurable_fake_retriever)
+
+# chain.invoke({"history": "h", "content": "c"})
+# chain.invoke({"history": "h", "content": "c"}, config={
+#     "configurable": {
+#         "prompt_choice": "kv",
+#         "retriever_prefix": "this is retriever",
+#         "retriever_k": 20,
+#         "retriever_method": "COSINE",
+#     }
+# })
+
+# fake_retriever 的 k 参数在 chain.invoke 之后会被复原
+```
+
+使用 `python ls_test.py` 启动, 在 `http://localhost:8000/chain/playground/` 页面可配置上面设定的配置项
+
+```python
+from fastapi import FastAPI
+from langchain.schema import BaseOutputParser
+from langserve import add_routes
+
+app = FastAPI(
+  title="LangChain Server",
+  version="1.0",
+  description="A simple api server using Langchain's Runnable interfaces",
+)
+
+# 3. Adding chain route
+add_routes(
+    app,
+    chain,
+    path="/chain",
+)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="localhost", port=8000)
 ```
 
 #### RunnableConfig
@@ -1608,7 +1691,14 @@ class VectorStore(ABC):
     def search(self, query: str, search_type: str, **kwargs) -> List[Document]: ...  # asearch
     @classmethod
     def from_documents(...): ...  # afrom_documents
-    def as_retriever(...) -> VectorStoreRetriever: ...
+
+    # 位于 langchain_community/vectore_stores/*.py 里的 VectorStore 的子类一般很少会重载 as_retriever.
+    def as_retriever(self, **kwargs: Any) -> VectorStoreRetriever:
+        # kwargs 一般只能包含 search_type 和 search_kwargs
+        tags = kwargs.pop("tags", None) or []
+        tags.extend(self._get_retriever_tags())
+        return VectorStoreRetriever(vectorstore=self, **kwargs, tags=tags)
+
 
     # 底层接口, 继承大多需要重写这些底层方法
     @abstractmethod
@@ -1624,19 +1714,191 @@ class VectorStore(ABC):
 
     # 其他接口
     ...
+
+# 注意: search_type 和 search_kwargs 写在类属性里而不放在 _get_relevant_documents 的, 这样方便用 Runnable.with_config, configurable_fields
+class VectorStoreRetriever(BaseRetriever):
+    vectorstore: VectorStore
+    search_type: str = "similarity"
+    search_kwargs: dict = Field(default_factory=dict)
+    allowed_search_types: ClassVar[Collection[str]] = ("similarity", "similarity_score_threshold", "mmr")
+
+    def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun) -> List[Document]:
+        if self.search_type == "similarity":
+            docs = self.vectorstore.similarity_search(query, **self.search_kwargs)
+        elif self.search_type == "similarity_score_threshold":
+            docs_and_similarities = (
+                self.vectorstore.similarity_search_with_relevance_scores(
+                    query, **self.search_kwargs
+                )
+            )
+            docs = [doc for doc, _ in docs_and_similarities]
+        elif self.search_type == "mmr":
+            docs = self.vectorstore.max_marginal_relevance_search(
+                query, **self.search_kwargs
+            )
+        else:
+            raise ValueError(f"search_type of {self.search_type} not allowed.")
+        return docs
+    
+    # add_documents 不是 BaseRetriever 所需要的接口, 而是 VectorStoreRetriever 特有的接口
+    def add_documents(self, documents: List[Document], **kwargs: Any) -> List[str]:
+        """Add documents to vectorstore."""
+        return self.vectorstore.add_documents(documents, **kwargs)
 ```
 
 ### Retriever
 
+TL;DR: 目前版本继承自 `BaseRetriever` 的类, 只需要重载 `_get_relevant_documents` (如有必要, 重载 `_aget_relevant_documents` 方法) 即可, 而不能去重载 `get_relevant_documents`. 否则会在 `__init_subclass__` 的检查中报警告. `_get_relevant_documents` 的重载方式为:
+
+```python
+def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun)-> List[Document]:
+    ...
+# 以下这种不推荐: 不太好配合 Runnable.with_config, configurable_fields 使用
+def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun, k, **kwargs)-> List[Document]:
+    ...
+```
+
+BaseRetriever 的关键代码如下
+
 ```python
 class BaseRetriever(RunnableSerializable[RetrieverInput, RetrieverOutput], ABC):
-    def invoke(...): ...  # ainvoke, 在内部调用 get_relevant_documents
-    def get_relevant_documents(...) ...  # aget_relevant_documents, 本质上就是 call hook + _get_relevant_documents
-    
-    # 一般来说自定义只要重载 _get_relevant_documents 即可
+    # _new_arg_supported 和 _expects_other_args 会在子类继承时就会自动设定好
+    _new_arg_supported: bool = False
+    _expects_other_args: bool = False
+    tags: Optional[List[str]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Version upgrade for old retrievers that implemented the public methods directly.
+        if cls.get_relevant_documents != BaseRetriever.get_relevant_documents:
+            warnings.warn("Retrievers must implement abstract `_get_relevant_documents` method instead of `get_relevant_documents`", DeprecationWarning)
+            swap = cls.get_relevant_documents
+            cls.get_relevant_documents = BaseRetriever.get_relevant_documents
+            cls._get_relevant_documents = swap
+        if (hasattr(cls, "aget_relevant_documents") and cls.aget_relevant_documents != BaseRetriever.aget_relevant_documents):
+            warnings.warn(
+                "Retrievers must implement abstract `_aget_relevant_documents` method instead of `aget_relevant_documents`", DeprecationWarning)
+            aswap = cls.aget_relevant_documents
+            cls.aget_relevant_documents = BaseRetriever.aget_relevant_documents
+            cls._aget_relevant_documents = aswap
+        parameters = signature(cls._get_relevant_documents).parameters
+        cls._new_arg_supported = parameters.get("run_manager") is not None
+        cls._expects_other_args = (len(set(parameters.keys()) - {"self", "query", "run_manager"}) > 0)
+
+    # ainvoke, 在内部调用 get_relevant_documents
+    def invoke(
+        self, input: str, config: Optional[RunnableConfig] = None, **kwargs: Any
+    ) -> List[Document]:
+        config = ensure_config(config)
+        return self.get_relevant_documents(
+            input,
+            callbacks=config.get("callbacks"),
+            tags=config.get("tags"),
+            metadata=config.get("metadata"),
+            run_name=config.get("run_name"),
+            **kwargs,
+        )
+
+    # aget_relevant_documents, 本质上就是 call hook + _get_relevant_documents
+    def get_relevant_documents(
+        self,
+        query: str,
+        *,
+        callbacks: Callbacks = None,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        run_name: Optional[str] = None,
+        **kwargs: Any,
+        ) -> List[Document]:
+        
+        run_manager = callback_manager.on_retriever_start(...)
+        try:
+            _kwargs = kwargs if self._expects_other_args else {}
+            if self._new_arg_supported:
+                result = self._get_relevant_documents(query, run_manager=run_manager, **_kwargs)
+            else:
+                result = self._get_relevant_documents(query, **_kwargs)
+        except Exception as e:
+            run_manager.on_retriever_error(e)
+            raise e
+        else:
+            run_manager.on_retriever_end(result)
+            return result
+  
+    # 继承自 BaseRetriever 的子类只要重载 _get_relevant_documents 即可
     @abstractmethod
-    def _get_relevant_documents(...): ...  # _aget_relevant_documents
+    def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun)-> List[Document]: ...  # _aget_relevant_documents
 ```
+
+### Tool
+
+#### 装饰函数
+
+```python
+from langchain_core.tools import tool
+
+@tool
+def query_arxiv(query: str, k: int = 5) -> List[str]:
+    """query arxiv data
+
+    Args:
+        query (str): query
+        k (int): nums of papers to query
+    
+    Returns:
+        List[str]: paper title list
+    """
+    return [f"{query}-result_{i}" for i in range(k)]
+
+query_arxiv.invoke({"query": "abc", "k": 3})
+
+# !!! Error!!!!
+# configurable_query_arxiv = query_arxiv.configurable_fields(
+#     k=ConfigurableField(id="tool_k")
+# )
+```
+
+#### retriever tool
+
+```python
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
+from typing import List
+from langchain.tools.retriever import create_retriever_tool
+from langchain_core.runnables.configurable import ConfigurableField
+
+
+class CustomRetriever(BaseRetriever):
+    prefix: str = "retriever"
+    k: int = 4
+    method: str = "L2"
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> List[Document]:
+        return [Document(page_content=doc) for doc in [f"{self.prefix}: {query}-{self.k}-{self.method}"]]
+
+fake_retriever = CustomRetriever()
+configurable_fake_retriever = fake_retriever.configurable_fields(
+    prefix=ConfigurableField(id="retriever_prefix"),
+    k=ConfigurableField(id="retriever_k"),
+    method=ConfigurableField(id="retriever_method"),
+)
+configurable_fake_retriever.invoke(input="bar")
+
+
+from langchain.tools.retriever import create_retriever_tool
+# !!!! Error !!!!
+# fake_retriever_tool = create_retriever_tool(configurable_fake_retriever, name="my retriever", description="desc")
+fake_retriever_tool = create_retriever_tool(fake_retriever, name="my retriever", description="desc")
+
+# !!!! Error !!!!
+# fake_retriever_tool.configurable_fields(
+#     prefix=ConfigurableField(id="retriever_prefix")
+# )
+```
+
 
 ## LangSmith
 
@@ -1735,3 +1997,13 @@ Final Answer: LangChain is a company that offers a framework for building and de
 分享链接: [AgentExecutor](https://smith.langchain.com/public/91a4d4cd-c8b0-476b-b406-dcfceffb18ad/r), [Retriever](https://smith.langchain.com/public/6cb15fa2-c9a1-45c2-80e3-88bcac96c34f/r), 截图如下
 
 ![](../assets/figures/langchain/langsmith-example.png)
+
+## LangServe (TODO)
+
+涉及到 langchain-cli
+
+```bash
+langchain serve
+langchain app
+langchain template
+```
