@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(P1) Langchain"
+title: "(P1) LangChain"
 date: 2023-11-22 11:10:04 +0800
 ---
 
@@ -661,36 +661,106 @@ def create_react_agent(llm, tools, prompt):
 
 ### `Runnable` vs `Chain`
 
+推荐用 LCEL 而非继承自 Chain 的原因
+
 ```python
-from langchain_openai import ChatOpenAI
+from langchain.chains.llm import LLMChain
+
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 
-# llm, prompt, output_parser 都是 Runnable, 是最小单元
-llm = ChatOpenAI()
 prompt = ChatPromptTemplate.from_messages([
     ("system", "You are world class technical documentation writer."),
     ("user", "{input}")
 ])
+llm = ChatOpenAI()
 output_parser = StrOutputParser()
 
-# chain 是 Chain, 其本身也是符合(继承) Runnable 协议的
-chain = prompt | llm | output_parser
+# 真流式: 新式 Chain
+lcel_chain = prompt | llm | output_parser
+for i in lcel_chain.stream({"input": "count from 1 to 100"}):
+    print(i)
+
+# 伪流式: 旧式 Chain
+old_chain = LLMChain(prompt=prompt, llm=llm, output_parser=output_parser)
+for i in old_chain.stream({"input": "count from 1 to 100"}):
+    print(i)
 ```
 
-`Chain` 分为旧式的和新式的, TODO: 把这个例子的省略号完善
+`Chain` 分为旧式的和新式的:
+
+- 旧式的 `XXChain` 从形式上是通过继承的方式来处理的, 其 `invoke` 是按照次序依次调用内部的 runnables 的与 invoke 相关的方法来实现的
+- 新式的 `create_xx_chain` 从形式上是通过 `Runnable` 通过连接符 `|` 得到的, 其 `invoke` 方法存粹是用由 LCEL 本身提供的
+
+**旧式 Chain 的使用**
 
 ```python
-from langchain.chains.combine_documents.stuff import create_stuff_documents_chain
 from langchain.chains.combine_documents.stuff import StuffDocumentsChain
 
+from langchain.chains import StuffDocumentsChain, LLMChain
+from langchain_core.prompts import PromptTemplate
+from langchain_community.llms import OpenAI
+
+document_prompt = PromptTemplate(input_variables=["page_content"], template="{page_content}")
+document_variable_name = "context"
+llm = OpenAI()
+prompt = PromptTemplate.from_template("Summarize this content: {context}")
+llm_chain = LLMChain(llm=llm, prompt=prompt)
 # 旧式 Chain: 采用继承的方式串接各个 runnable 组件, 继承关系如下
 # StuffDocumentsChain -> BaseCombineDocumentsChain -> Chain -> RunnableSerializable -> (Serializable, Runnable)
-chain = StuffDocumentsChain(...)
+chain = StuffDocumentsChain(
+    llm_chain=llm_chain,
+    document_prompt=document_prompt,
+    document_variable_name=document_variable_name
+)
+```
 
+**新式 Chain 的使用: TODO: 对齐旧式类**
+
+```python
+from langchain_community.chat_models import ChatOpenAI
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains.combine_documents import create_stuff_documents_chain
+
+prompt = ChatPromptTemplate.from_messages(
+    [("system", "What are everyone's favorite colors:\\n\\n{context}")]
+)
+llm = ChatOpenAI(model_name="gpt-3.5-turbo")
 # 新式 Chain: 直接用 | 以及 RunnableParallel, RunnablePassThrough 等串接各个 runnable 组件, 内部实现大致如下
 # (RunnablePassthrough.assign(**{DOCUMENTS_KEY: format_docs}).with_config(...) | prompt | llm | _output_parser).with_config(...)
-chain = create_stuff_documents_chain(...)
+chain = create_stuff_documents_chain(llm, prompt)
+```
+
+**旧式 Chain 的实现**
+
+```python
+# 注意 Chain 本身在 Runnable 的基础上只实现了 invoke 和 ainvoke, 而沿用了 Runnable 的 stream 方法, 因此是伪流式的
+# 所以使用继承 Chain 的方式, 如果要支持流式可能需要写很多额外代码
+class LLMChain(Chain):
+    prompt: BasePromptTemplate
+    llm: Union[
+        Runnable[LanguageModelInput, str], Runnable[LanguageModelInput, BaseMessage]
+    ]
+    output_key: str = "text"
+    output_parser: BaseLLMOutputParser = Field(default_factory=StrOutputParser)
+    return_final_only: bool = True
+    llm_kwargs: dict = Field(default_factory=dict)
+
+    def _call(...):
+        prompt = self.prompt.format_prompt(input)
+        generation = self.llm.generate_prompt(prompt)
+        result = self.output_parser.parse_result(generation)
+        return result
+
+chain = LLMChain(prompt=prompt, llm=llm, output_parser=output_parser)
+```
+
+**新式 Chain 的实现**
+
+```python
+chain = prompt | llm | output_parser
 ```
 
 ### Memory (For Legacy Chain vs For LCEL)
@@ -1218,6 +1288,44 @@ if __name__ == "__main__":
     uvicorn.run(app, host="localhost", port=8000)
 ```
 
+#### RunnableBinding
+
+例子1
+
+```python
+from langchain_core.runnables import RunnableSerializable
+from langchain_core.runnables.utils import Input, Output
+
+class CustomRunable(RunnableSerializable[Input, Output]):
+    def invoke(self, input, config=None, **kwargs):
+        return {
+            "input": input,
+            **kwargs
+        }
+    
+CustomRunable().bind(b=2).invoke(1, a=2)  # {"input": 1, "a": 2, "b": 2}
+```
+
+例子2
+
+```python
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
+from typing import List
+from langchain_core.runnables.configurable import ConfigurableField
+
+class CustomRetriever(BaseRetriever):
+    k: int = 4
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun, k=None
+    ) -> List[Document]:
+        k = self.k if k is None else k
+        return [Document(page_content=f"{query}-result_{i}") for i in range(k)]
+    
+CustomRetriever().bind(k=3).invoke("text")
+```
+
 #### RunnableConfig
 
 继承自字典类型, TODO: 具体包含的 key
@@ -1678,7 +1786,17 @@ class AsyncCallbackHandler(BaseCallbackHandler):
 
 ### VectorStore
 
-以下是最主要的抽象接口, 简单地说, 需要实现 创建, 增, 删, 查 这几个功能, 而 `as_retriever` 得到的 `VectorStoreRetriever` 继承自 `BaseRetriever`, 其能力完全来自于 `VectorStore`
+----
+
+TL;DR
+
+`VectorStore` 需要实现 创建, 增, 删, 查 这几个功能, 而 `as_retriever` 得到的 `VectorStoreRetriever` 继承自 `BaseRetriever`, 其能力完全来自于 `VectorStore`, 关于如何继承的细节参考下一节关于 `Retriever` 的描述
+
+`VectorStore` 的重点在于数据的管理, 当然也包含查询, 而 `Retriever` 只关注于查询. 因此可以说 `VectorStore` 在逻辑上已经实现了 `Retriever` 的接口. 但作为大模型应用的开发人员来说, 有时候并不需要关心数据的管理, 而只关注检索, 例如使用搜索引擎检索内容, 使用者并不关心搜索服务提供方内部的数据存储细节.
+
+----
+
+以下是最主要的抽象接口
 
 ```python
 # langchain_core/vectorstores.py
@@ -1687,7 +1805,9 @@ class VectorStore(ABC):
     @property
     def embedding(self): ...  # embedding 模型
     def add_documents(self, documnets: List[Document], ...): ...  # aadd_documents
-    def delete(self, ids, ...): ...  # adelete
+    def delete(self, ids, ...): raise NotImplementedError  # adelete
+    
+    # search 方法会分发至 similarity_search 和 max_marginal_relevance_search 方法
     def search(self, query: str, search_type: str, **kwargs) -> List[Document]: ...  # asearch
     @classmethod
     def from_documents(...): ...  # afrom_documents
@@ -1699,20 +1819,26 @@ class VectorStore(ABC):
         tags.extend(self._get_retriever_tags())
         return VectorStoreRetriever(vectorstore=self, **kwargs, tags=tags)
 
-
-    # 底层接口, 继承大多需要重写这些底层方法
+    # 底层接口, 继承时必须实现
     @abstractmethod
-    def add_text(self, texts, metadatas, ...): ...  # aadd_texts
-    @abstractmethod
-    def similarity_search(...): ...
-    def similarity_search_with_score(...): ...  # asimilarity_search_with_score
-    def similarity_search_with_relevance_scores(...): ... # asimilarity_search_with_relevance_scores
-    def max_marginal_relevance_search(...): ... # amax_marginal_relevance_search
+    def add_text(self, texts, metadatas, **kwargs): ...  # aadd_texts
+    
     @classmethod
     @abstractmethod
-    def from_texts(...):  # afrom_texts
+    def from_texts(cls, texts, embedding, metadatas, **kwargs):  # afrom_texts
+    
+    @abstractmethod
+    def similarity_search(self, query, k=4, **kwargs): ...
+    
+    # 其他接口, 继承时可以不必实现
+    # 以下 3 个方法对应于 VectorStoreRetriever 中的 3 中 search_type
+    # "similarity", "similarity_score_threshold", "mmr"
+    def similarity_search_with_score(...): raise NotImplementedError # asimilarity_search_with_score
+    def similarity_search_with_relevance_scores(...): ...  # asimilarity_search_with_relevance_scores
+    def max_marginal_relevance_search(...): raise NotImplementedError # amax_marginal_relevance_search
 
-    # 其他接口
+
+    def similarity_search_by_vector(...): raise NotImplementedError # asimilarity_search_by_vector
     ...
 
 # 注意: search_type 和 search_kwargs 写在类属性里而不放在 _get_relevant_documents 的, 这样方便用 Runnable.with_config, configurable_fields
@@ -1748,15 +1874,50 @@ class VectorStoreRetriever(BaseRetriever):
 
 ### Retriever
 
-TL;DR: 目前版本继承自 `BaseRetriever` 的类, 只需要重载 `_get_relevant_documents` (如有必要, 重载 `_aget_relevant_documents` 方法) 即可, 而不能去重载 `get_relevant_documents`. 否则会在 `__init_subclass__` 的检查中报警告. `_get_relevant_documents` 的重载方式为:
+----
+
+**TL;DR**
+
+目前版本继承自 `BaseRetriever` 的类, 只需要重载 `_get_relevant_documents` (如有必要, 重载 `_aget_relevant_documents` 方法) 即可, 而不能去重载 `get_relevant_documents`. 否则会在 `__init_subclass__` 的检查中报警告. `_get_relevant_documents` 的重载方式为:
 
 ```python
 def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun)-> List[Document]:
     ...
+
+# langchain_community/retrievers/weaviate_hybrid_search.py: WeaviateHybridSearchRetriever 用了这种方式
 # 以下这种不推荐: 不太好配合 Runnable.with_config, configurable_fields 使用
 def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun, k, **kwargs)-> List[Document]:
     ...
 ```
+
+关于继承 `VectorStore`, `BaseRetriever` 的说明:
+
+一般情况下: `XYZVectorStore` 需要支持 `as_retriever` 方法: `VectorStore` 中对 `as_retriever` 的默认实现是:
+
+```python
+def as_retriever(self, **kwargs: Any) -> VectorStoreRetriever:
+    tags = kwargs.pop("tags", None) or []
+    tags.extend(self._get_retriever_tags())
+    return VectorStoreRetriever(vectorstore=self, **kwargs, tags=tags)
+```
+
+而 `VectorStoreRetriever._get_relevant_documents` 需要支持 3 类 `search_type`:
+
+```python
+{
+    "similarity": vectorstore.similarity_search,
+    "similarity_score_threshold": vectorstore.similarity_search_with_relevance_scores,
+    "mmr": vectorstore.max_marginal_relevance_search
+}
+```
+
+然而, 正如前面所述, `XYZVectorStore` 不必实现上面的这 3 个接口 (只需要实现 `similarity_search` 方法即可). 因此, 在 `XYZVectorStore` 没有全部实现这 3 个接口或者有其他 `search_type` 时, 有几个做法:
+
+- 不实现 `as_retriever` 方法 (重载为 `raise NotImplementedError`), 而另外实现一个直接继承自 `BaseRetriever` 的类. 参考: `langchain_coummnity/vector_stores/azuresearch.py` 的 `AzureSearch` 和 `AzureSearchVectorStoreRetriever`
+- 重载 `XYZVectorStore.as_retriever`, 使它返回 `XYZVectorStoreRetriever`; 并且重载 `XYZVectorStoreRetriever._get_relevant_documents`. 参考: `langchain_coummnity/vector_stores/redis/base.py` 的 `Redis` 和 `RedisVectorStoreRetriever`
+- 另外, 如果只需要有查询接口, 可以不继承 `VectorStore`, 而直接继承 `BaseRetriever` 即可, 例如: `langchain_coummnity/retrievers/weaviate_hybrid_search.py` 的 `WeaviateHybridSearchRetriever`
+
+-----
 
 BaseRetriever 的关键代码如下
 
@@ -1832,6 +1993,12 @@ class BaseRetriever(RunnableSerializable[RetrieverInput, RetrieverOutput], ABC):
 ```
 
 ### Tool
+
+TODO:
+
+- BaseTool, Tool, StructuredTool 之间的区别是什么
+- 用装饰器, `create_retriever_tool`, 以及继承以上三者, 怎样可以实现 `bind` 或 `configurable_fields`
+
 
 #### 装饰函数
 
