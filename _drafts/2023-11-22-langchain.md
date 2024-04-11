@@ -1884,11 +1884,34 @@ class VectorStoreRetriever(BaseRetriever):
 def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun)-> List[Document]:
     ...
 
+# TODO: 貌似没有什么不好的
 # langchain_community/retrievers/weaviate_hybrid_search.py: WeaviateHybridSearchRetriever 用了这种方式
 # 以下这种不推荐: 不太好配合 Runnable.with_config, configurable_fields 使用
 def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun, k, **kwargs)-> List[Document]:
     ...
 ```
+
+继承 `BaseRetriever` 的例子:
+
+```python
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.runnables.configurable import ConfigurableField
+
+class MyRetriever(BaseRetriever):
+    k: int = 2
+    def _get_relevant_documents(self, query: str, *, run_manager: CallbackManagerForRetrieverRun, k=None, **kwargs):
+        k = self.k if k is None else k
+        return [f"{query} answer-{i}" for i in range(k)]
+
+
+retriever = MyRetriever(k=3)
+res0 = retriever.invoke("x", k=7)  # 7 results
+configurable_retriever = retriever.configurable_fields(k=ConfigurableField(id="default_k"))
+res1 = configurable_retriever.bind(k=9).invoke("123", config={"configurable": {"default_k": 1}})  # 9 results
+res2 = configurable_retriever.invoke("123", config={"configurable": {"default_k": 1}})  # 1 results
+```
+
 
 关于继承 `VectorStore`, `BaseRetriever` 的说明:
 
