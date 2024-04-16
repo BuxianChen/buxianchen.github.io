@@ -2197,3 +2197,16 @@ langchain serve
 langchain app
 langchain template
 ```
+
+## Contributing
+
+使用虚拟环境来安装 pipx 和 poerty
+
+```bash
+conda create -n langchain python=3.10
+conda install pipx
+pipx install poetry
+pipx ensurepath
+poetry config virtualenvs.prefer-active-python true
+# ...
+```
