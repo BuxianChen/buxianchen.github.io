@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(Alpha) Python 包管理与CI/CD开发工具"
+title: "(P0) Python 包管理与CI/CD开发工具"
 date: 2024-04-16 10:05:04 +0800
 labels: [python, package manager]
 ---
@@ -21,8 +21,68 @@ labels: [python, package manager]
 
 **参考资料**
 
+- [https://packaging.python.org/en/latest/](https://packaging.python.org/en/latest/): 官方资料, pypa 项目底下包含 pip, setuptools, wheel, twine, virtualenv, pipx 等的源码
 - [https://www.jumpingrivers.com/blog/python-package-managers-pip-conda-poetry/](https://www.jumpingrivers.com/blog/python-package-managers-pip-conda-poetry/)
 - [https://www.anaconda.com/blog/using-pip-in-a-conda-environment](https://www.anaconda.com/blog/using-pip-in-a-conda-environment): 在 conda 环境中使用 pip 的注意事项
+
+## 打包: 历史与最佳实践
+
+备注: 尽量使用 `python -m pip install xxx` 而非 `pip install xxx`
+
+术语释义 (python 3.8 文档, 术语解释并不过时):
+- [https://docs.python.org/3.8/distributing/index.html](https://docs.python.org/3.8/distributing/index.html)
+- [https://docs.python.org/3.8/installing/index.html#key-terms](https://docs.python.org/3.8/installing/index.html#key-terms)
+
+要点如下:
+
+- pip: 装包的最底层工具之一, pip 本身不依赖于 setuptools, 但很多包在安装时会需要依赖 setuptools
+- setuptools: 最原始的工具是 distutils, setuptools 目前的实现也依赖于 distutils, setuptools 是非官方的事实标准, 在未来可能会成为标准库的一部分
+- egg: 已经弃用, 现在都是使用 whl 格式
+- `easy_install`: `easy_install` 是作为 setuptools 的一部分在 2004 年发布的, 现在已经完全弃用
+- hatch, pdm, poetry: 基本上逻辑都是配置文件只写一个 `pyproject.toml`, 切换起来不困难, 只需要修改 toml 文件即可, 功能类似
+
+Overview:
+
+发布格式大体分为两类: 源码发布(Source Distribution, 简称 sdist, 也就是 `.tar.gz` 格式)与二进制格式发布 (binary distributions, 也称为 Wheels), 例如 [pip==23.3.1](https://pypi.org/project/pip/23.3.1/#files) 就包含两种发布格式: `pip-23.3.1.tar.gz` 和 `pip-23.3.1-py3-none-any.whl`. 最佳实践发布源码格式以及一个或多个 whl 格式.
+
+源码格式发布通常是checkout某个提交, 然后加上元信息文件 `PKG-INFO`, 以 `pip-23.3.1.tar.gz` 为例, 解压后文件目录与原始代码库的提交差距不大, 如下:
+
+```
+src/
+  - pip/
+  - pip.egg-info/  # 这个文件夹应该不是标准的做法, egg 已弃用
+    - PKG-INFO
+    - dependency_links.txt
+    - not-zip-safe
+    - SOURCES.txt
+    - entry_points.txt
+    - top_level.txt
+PKG-INFO   # 这个文件的内容和 src/pip.egg-info/PKG-INFO 完全一致
+...        # 其他文件都出现在原始代码库的相应提交里, 但原代码库里的一些文件例如 .pre-commit-config.yaml 文件不包含在 .tar.gz 文件内, 为什么会这样待研究, 猜测是和 pip 代码库本身的 CI/CD 工具设置有关
+```
+
+而二进制发布基本上等价于用户在安装时需要复制的所有文件, 对于一个包的一个特定版本, PyPI 规定只能发布一个源码包, 但可以包含多个二进制包 (可以参考 [opencv-python==4.8.1.78](https://pypi.org/project/opencv-python/4.8.1.78/#files)). 对于像这种包含 C 代码的项目, whl 文件里通常不包含 C 代码, 而只包含预编译好的 `.so` 文件. 而对于像 `pip` 这类纯 python 包, 其 whl 文件内只包含这种目录结构 (whl 文件实际上可以用 unzip 解压):
+
+```
+- pip/
+- pip-23.3.1.dist-info/  # 注意这个和 sdist 里的文件夹名不一样, 内容也不太一样, 但都是文本文件
+  - AUTHORS.txt
+  - entry_points.txt
+  - LICENSE.txt
+  - METADATA # 这个文件等价于 sdist 中的 PKG-INFO 文件
+  - RECORD   # 记录了 pip/ 文件夹中所有文件的哈希值
+  - top_level.txt
+  - WHEEL
+```
+
+这里先暂且不深入这两种格式的发布过程 Github -> .tar.gz/.whl -> PyPI. 我们先看使用者的视角, 使用者安装的过程通常是由 `pip install` 发起的, 这个过程大体上是:
+
+1. 先去尝试下载匹配的 `.whl` 文件, 然后基本上就是直接将 `.whl` 文件解压然后丢到 `site-packages` 文件夹下, 以上面的 `pip==23.3.1` 为例, 就是直接在 `site-package` 文件夹下增加了 `pip` 和 `pip.egg-info` 文件夹.
+2. 如果找不到匹配的 `.whl` 文件, 则下载源码格式发布的文件, 然后在本地将其打包为 `.whl` 格式, 然后将 `.whl` 格式文件进行安装
+
+而本文的重点在于发布过程: Github -> CI/CD -> .tar.gz/.whl -> PyPI 或 Local Source Code -> .tar.gz/.whl -> PyPI
+
+[Is `setup.py` deprecated?](https://packaging.python.org/en/latest/discussions/setup-py-deprecated/), setuptools (包含 easy_install) 以及 setup.py 没有被弃用, 只是不要使用命令行用法, 例如 `python setup.py install`. setuptools 搭配 `setup.py` 仍然可以用于 build backend.
 
 ## pipx
 
@@ -711,6 +771,10 @@ subprocess.Popen(cmd, **kwargs)
 ```
 
 ## poetry
+
+### TL;DR
+
+`poetry.lock` 文件不应该被 ignore, 而应该交由 git 管理. 
 
 
 ## 附录
