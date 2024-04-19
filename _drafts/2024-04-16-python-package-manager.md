@@ -774,7 +774,14 @@ subprocess.Popen(cmd, **kwargs)
 
 ### TL;DR
 
-`poetry.lock` 文件不应该被 ignore, 而应该交由 git 管理. 
+- `poetry.lock` 文件不应该被 ignore, 而应该交由 git 管理.
+- poetry 现在的 installer 貌似已经不依赖于 pip 了. [blog](https://python-poetry.org/blog/announcing-poetry-1.4.0/).
+- poetry 可以用于包含 C++ 代码的项目, 但官方文档似乎没有过多介绍
+- 可以在 poetry 命令里加上 `-vvv` 选项, 观察其行为, 例如: `poetry update -vvv`, `poetry config --list -vvv`
+
+```
+poetry new --src 
+```
 
 
 ## 附录
@@ -835,4 +842,21 @@ if sys.flags.isolated:
     # run code in isolated mode if currently running isolated
     cmd.insert(1, '-I')
 subprocess.run(cmd, check=True)
+```
+
+### PyPI JSON API
+
+pip, poetry 等工具在运行时会使用到 PyPI JSON API, 用于解析依赖 (但是这个 API 里似乎没有依赖包的信息, API 返回的信息很大程度上是代码打包时, 如果是二进制打包, 是 METADATA 文件内容, 或者是源码打包, PKG-INFO 文件内容)? 然而并不是所有 PyPI 的包写的 metadata 信息都完善, 因此有些时候对于 pip 或 poetry 来说确认依赖关系只能先下载下来再做验证
+
+- pip 相关的代码似乎在 `pip/_vendor/locations.py:PyPIJSONLocator`
+- poetry 的一个 FAQ: [https://python-poetry.org/docs/faq/](https://python-poetry.org/docs/faq/), poetry 会缓存尝试过的包的 metadata 信息, 位于 `~/.cache/pypoetry` 目录下, 可以自行探索
+
+API 参考文档: [https://warehouse.pypa.io/api-reference/json.html](https://warehouse.pypa.io/api-reference/json.html)
+
+```
+GET /pypi/<project_name>/json
+GET /pypi/<project_name>/<version>/json
+
+https://pypi.org/pypi/pip/json
+https://pypi.org/pypi/pip/23.3.1/json
 ```
