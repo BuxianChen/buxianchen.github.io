@@ -38,10 +38,12 @@ labels: [python, package manager]
 - pip: 装包的最底层工具之一, pip 本身不依赖于 setuptools, 但很多包在安装时会需要依赖 setuptools
 - setuptools: 最原始的工具是 distutils, setuptools 目前的实现也依赖于 distutils, setuptools 是非官方的事实标准, 在未来可能会成为标准库的一部分
 - egg: 已经弃用, 现在都是使用 whl 格式
-- `easy_install`: `easy_install` 是作为 setuptools 的一部分在 2004 年发布的, 现在已经完全弃用
-- hatch, pdm, poetry: 基本上逻辑都是配置文件只写一个 `pyproject.toml`, 切换起来不困难, 只需要修改 toml 文件即可, 功能类似
+- `easy_install`: `easy_install` 是作为 setuptools 的一部分在 2004 年发布的, 现在已经完全弃用, 现在应该用 pip
+- build: `python -m build` 用来代替 `python setup.py build`
+- twine: 上传 .whl 及 .tar.gz 到 PyPI 的工具
+- hatch, pdm, poetry: 配置文件格式支持 `pyproject.toml`, 功能类似, 每一个都集合了 `pip install`, `python -m build`, `twine` 的功能, 甚至还能包含一些 CI/CD 的功能
 
-Overview:
+包的发布与安装流程总览:
 
 发布格式大体分为两类: 源码发布(Source Distribution, 简称 sdist, 也就是 `.tar.gz` 格式)与二进制格式发布 (binary distributions, 也称为 Wheels), 例如 [pip==23.3.1](https://pypi.org/project/pip/23.3.1/#files) 就包含两种发布格式: `pip-23.3.1.tar.gz` 和 `pip-23.3.1-py3-none-any.whl`. 最佳实践发布源码格式以及一个或多个 whl 格式.
 
@@ -61,7 +63,7 @@ PKG-INFO   # 这个文件的内容和 src/pip.egg-info/PKG-INFO 完全一致
 ...        # 其他文件都出现在原始代码库的相应提交里, 但原代码库里的一些文件例如 .pre-commit-config.yaml 文件不包含在 .tar.gz 文件内, 为什么会这样待研究, 猜测是和 pip 代码库本身的 CI/CD 工具设置有关
 ```
 
-而二进制发布基本上等价于用户在安装时需要复制的所有文件, 对于一个包的一个特定版本, PyPI 规定只能发布一个源码包, 但可以包含多个二进制包 (可以参考 [opencv-python==4.8.1.78](https://pypi.org/project/opencv-python/4.8.1.78/#files)). 对于像这种包含 C 代码的项目, whl 文件里通常不包含 C 代码, 而只包含预编译好的 `.so` 文件. 而对于像 `pip` 这类纯 python 包, 其 whl 文件内只包含这种目录结构 (whl 文件实际上可以用 unzip 解压):
+而二进制发布基本上等价于用户在安装时需要复制(到 `site-packages` 目录)的所有文件, 对于一个包的一个特定版本, PyPI 规定只能发布一个源码包, 但可以包含多个二进制包 (可以参考 [opencv-python==4.8.1.78](https://pypi.org/project/opencv-python/4.8.1.78/#files)). 对于像这种包含 C 代码的项目, whl 文件里通常不包含 C 代码, 而只包含预编译好的 `.so` 文件. 而对于像 `pip` 这类纯 python 包, 其 whl 文件内只包含这种目录结构 (whl 文件实际上可以用 unzip 解压):
 
 ```
 - pip/
@@ -82,13 +84,25 @@ PKG-INFO   # 这个文件的内容和 src/pip.egg-info/PKG-INFO 完全一致
 
 而本文的重点在于发布过程: Github -> CI/CD -> .tar.gz/.whl -> PyPI 或 Local Source Code -> .tar.gz/.whl -> PyPI
 
+以下内容有如下主线
+
+- 许多工具实际上在底层都会用到虚拟环境, 特别地, 以 pipx 为例探索一下它地功能以及对虚拟环境的使用. 后续的 pre-commit 及 poetry 工具实际上也用到了虚拟环境.
+- poetry 怎么完成 Local Source Code -> .tar.gz/.whl -> PyPI: 在此之前我们先看下以前用 setuptools 是怎么做的, 而安装 poetry 建议使用 pipx, 我们也探索一下 pipx
+- 一些 CI/CD 过程中实际使用的底层工具: mypy, codespell, ruff 等
+- 本地开发时, 手工一个个执行这些 CI/CD 工具有些繁琐, 上面大多数 CI/CD 工具都属于代码质量检查, 因此完全可以卡在提交代码时自动触发, 自动修复.
+- GitHub 作为代码托管平台, 除了存放代码, 实际上还能实现 CI/CD. 所谓 CI/CD, 最直观的就是保证代码符合规范(否则不让代码合并), 在某些时机自动将代码打包并部署.
+
 ## setuptools, `setup.py`
 
 [Is `setup.py` deprecated?](https://packaging.python.org/en/latest/discussions/setup-py-deprecated/), setuptools (包含 easy_install) 以及 setup.py 没有被弃用, 只是不要使用命令行用法, 例如 `python setup.py install`. setuptools 搭配 `setup.py` 仍然可以用于 build backend.
 
-在 `pyproject.toml` 成为 `setuptools` 的标准之前, 为了使用 `pip install .` 或者 `python setup.py install` 安装一个包, 会涉及到多个 “配置文件”: `setup.py`, `setup.cfg`, `MANIFEST.in`. 先看一个例子:
+在 `pyproject.toml` 成为 `setuptools` 的标准之前, 为了使用 `pip install .` 或者 `python setup.py install` 安装一个包, 会涉及到多个 “配置文件”: `setup.py`, `setup.cfg`, `MANIFEST.in`. 它们的关系大概是这样:
 
-TODO
+- 最早以前, 使用 `setup.py`
+- 后来由于 `setup.py` 被认为不安全, 因为 `python setup.py install` 会真的执行代码, 因此代码中可以包含有危险操作, 例如删除系统文件, 所以希望改为配置文件 `setup.cfg`, 然而在一些比较复杂的情况下, `setup.cfg` 不够灵活, 可能还是需要 `setup.py`, 因此对于 `setup.py` 的态度应该是能不用就尽量不用, 但需要用时就用
+- 再后来, CI/CD 工具越来越多, 每个工具都有一个特定名字的配置文件, 导致仓库的根目录总是会有一堆配置文件, 非常混乱, 因此大家约定都去读一个统一的文件 `pyproject.toml`, 而对于 setuptools 的来说, 就是把 `setup.cfg` 转为 `pyproject.toml` 的写法, 仍然是能只用 `pyproject.toml` 则用, 不得已还是可以继续用 `setup.py`, 而 `setup.cfg` 应该被弃用
+
+这里我们举一个使用 `setup.py` 的例子: TODO
 
 ## toml
 
@@ -221,8 +235,72 @@ name = "plantain"
 
 ### pyproject.toml
 
-```toml
+`pyproject.toml` 文件里的信息可能会被多个“工具”所读取, 但是它们只关注它们所需要的部分. 例如: 对于一份像这样的 `pyproject.toml` (以下为精简版, 完整内容来源于 [langchain-community](https://github.com/langchain-ai/langchain/blob/939d113d109ae00883c1bed37e9b4f460bcb9e5f/libs/community/pyproject.toml)):
+
 ```
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "langchain-community"
+version = "0.0.34"
+description = "Community contributed LangChain integrations."
+repository = "https://github.com/langchain-ai/langchain"
+
+[tool.poetry.dependencies]
+python = ">=3.8.1,<4.0"
+langchain-core = "^0.1.45"
+SQLAlchemy = ">=1.4,<3"
+
+[tool.poetry.group.test]
+optional = true
+
+[tool.poetry.group.test.dependencies]
+pytest = "^7.3.0"
+pytest-cov = "^4.1.0"
+
+[tool.poetry.group.codespell]
+optional = true
+
+[tool.poetry.group.codespell.dependencies]
+codespell = "^2.2.0"
+
+[tool.ruff]
+exclude = [
+  "tests/examples/non-utf8-encoding.py",
+  "tests/integration_tests/examples/non-utf8-encoding.py",
+]
+
+[tool.ruff.lint]
+select = [
+  "E",  # pycodestyle
+  "F",  # pyflakes
+  "I",  # isort
+  "T201", # print
+]
+
+[tool.mypy]
+ignore_missing_imports = "True"
+disallow_untyped_defs = "True"
+exclude = ["notebooks", "examples", "example_data"]
+
+[tool.coverage.run]
+omit = [
+    "tests/*",
+]
+
+[tool.codespell]
+skip = '.git,*.pdf,*.svg,*.pdf,*.yaml,*.ipynb,poetry.lock,*.min.js,*.css,package-lock.json,example_data,_dist,examples,*.trig'
+```
+
+应该这么看这份 `pyproject.toml` 文件: 像 `build-system` 和 `tool.poetry` 这两个 table 下的配置是用于给 `poetry` 命令使用的, 例如开发者手工使用 `poetry install`, `poetry.build` 命令时, `poetry` 会去读取这两个 table 的内容来执行命令, 更重要的是在 Github Action 里自动触发 poetry 命令; 而像 `tool.ruff` 这个 table 是在执行 `ruff` 命令时会被 `ruff` 所读取. 同理: `mypy`, `codespell`, `coverage`. 在这些工具不遵循 `pyproject.toml` “协议” 之前, 往往每个工具都需要有一个独立的配置文件, 例如:
+
+- `setuptools`: `setup.py`/`setup.cfg`, `MANIFEST.in`
+- `mypy`: `.mypy.ini`
+- `tox`: `tox.ini`
+
+如今这些工具都支持了 `pyproject.toml`, 这样一来配置便可集中在这一个文件内, 这便是 `pyproject.toml` 的优势.
 
 
 ## pipx
@@ -911,7 +989,7 @@ cmd = ['flake8', '--exclude=*/client/inference_pb2.py, */client/inference_pb2_gr
 subprocess.Popen(cmd, **kwargs)
 ```
 
-## poetry
+## poetry (TODO)
 
 ### TL;DR
 
@@ -926,7 +1004,7 @@ poetry new --src
 
 ## PyPI
 
-最原始的打包发布一般是
+最原始的打包发布流程一般是
 
 ```bash
 python -m build
@@ -949,7 +1027,7 @@ build-backend = "poetry.core.masonry.api"
 
 而 `twine` 包用于上传至 PyPI
 
-而 poetry 包装了所有的这些过程 (底层不一定会使用 build, pip, twine 这些工具)
+而 poetry 包装了所有的这些过程 (但其底层不一定会使用 build, pip, twine 这些工具)
 
 ## Github Action
 
@@ -957,8 +1035,6 @@ build-backend = "poetry.core.masonry.api"
 - 一个例子: happycow
 
 ## 附录
-
-### `__main__.py` 和 `__init__.py`
 
 ### `ensurepip`
 
