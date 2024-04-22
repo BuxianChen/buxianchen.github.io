@@ -25,7 +25,7 @@ labels: [python, package manager]
 - [https://www.jumpingrivers.com/blog/python-package-managers-pip-conda-poetry/](https://www.jumpingrivers.com/blog/python-package-managers-pip-conda-poetry/)
 - [https://www.anaconda.com/blog/using-pip-in-a-conda-environment](https://www.anaconda.com/blog/using-pip-in-a-conda-environment): 在 conda 环境中使用 pip 的注意事项
 
-## 打包: 历史与最佳实践
+## Overview
 
 备注: 尽量使用 `python -m pip install xxx` 而非 `pip install xxx`
 
@@ -82,7 +82,148 @@ PKG-INFO   # 这个文件的内容和 src/pip.egg-info/PKG-INFO 完全一致
 
 而本文的重点在于发布过程: Github -> CI/CD -> .tar.gz/.whl -> PyPI 或 Local Source Code -> .tar.gz/.whl -> PyPI
 
+## setuptools, `setup.py`
+
 [Is `setup.py` deprecated?](https://packaging.python.org/en/latest/discussions/setup-py-deprecated/), setuptools (包含 easy_install) 以及 setup.py 没有被弃用, 只是不要使用命令行用法, 例如 `python setup.py install`. setuptools 搭配 `setup.py` 仍然可以用于 build backend.
+
+在 `pyproject.toml` 成为 `setuptools` 的标准之前, 为了使用 `pip install .` 或者 `python setup.py install` 安装一个包, 会涉及到多个 “配置文件”: `setup.py`, `setup.cfg`, `MANIFEST.in`. 先看一个例子:
+
+TODO
+
+## toml
+
+### 语法
+
+直接参考自 [https://toml.io/en/v1.0.0](https://toml.io/en/v1.0.0)
+
+```toml
+# 这是注释格式, 在 toml 的术语里, a 称为 table (其实就是字典类型)
+a.b = "a/b"    # 转换为 json: {"a": {"b": "a/b"}}
+a.c = 1.23
+a.d = true
+
+# 在 Unix 上是: "This\nis\nxxx", 在Windows上是 "This\r\nis\r\nxxx"
+a.e = """This
+is
+xxx
+"""
+
+a.f = 'C:\Users\nodejs\templates'  # 单引号括起来的字符串不需要转义
+a."g.h" = 3    # 转换为 json: {"a": {"g.h": 3}}
+
+# "no new line"
+a.i = """no \
+new line
+"""
+
+# array
+integers = [1, 2, 3]
+colors = [
+    "red",
+    "yellow",
+    "green"
+]
+nested_arrays_of_ints = [ [ 1, 2 ], [3, 4, 5] ]
+nested_mixed_array = [ [ 1, 2 ], ["a", "b", "c"] ]
+string_array = [ "all", 'strings', """are the same""", '''type''' ]
+
+# Mixed-type arrays are allowed
+numbers = [0.1, 0.2, 0.5, 1, 2, 5 ]
+contributors = [
+  "Foo Bar <foo@example.com>",
+  { name = "Baz Qux", email = "bazqux@example.com", url = "https://example.com/bazqux" }
+]
+
+# table (字典, 哈希表)
+# 转换为 json {"table-1": {"key1": "some string", "key2": 123}}
+[table-1]
+key1 = "some string"
+key2 = 123
+
+# 转换为 json {"dog": {"tater.man": {"type": {"name": "pug"}}}}
+[dog."tater.man"]
+type.name = "pug"
+
+# inline table
+names = { first = "Tom", last = "Preston-Werner" }
+
+
+# Arrays of table: peotry.lock 里常见
+[[products]]
+name = "Hammer"
+sku = 738594937
+
+[[products]]  # empty table within the array
+
+[[products]]
+name = "Nail"
+sku = 284758393
+color = "gray"
+
+# 以上对应于 json 是:
+# {"products": [
+#     {"name": "Hammer", "sku": 738594937},
+#     {},
+#     {"name": "Nail", "sku": 284758393, "color": "gray"}
+#   ]
+# }
+```
+
+一个更高阶的用法:
+
+```toml
+[[fruits]]
+name = "apple"
+
+[fruits.physical]  # subtable
+color = "red"
+shape = "round"
+
+[[fruits.varieties]]  # nested array of tables
+name = "red delicious"
+
+[[fruits.varieties]]
+name = "granny smith"
+
+
+[[fruits]]
+name = "banana"
+
+[[fruits.varieties]]
+name = "plantain"
+```
+
+对应的 json 版本
+
+```json
+{
+  "fruits": [
+    {
+      "name": "apple",
+      "physical": {
+        "color": "red",
+        "shape": "round"
+      },
+      "varieties": [
+        { "name": "red delicious" },
+        { "name": "granny smith" }
+      ]
+    },
+    {
+      "name": "banana",
+      "varieties": [
+        { "name": "plantain" }
+      ]
+    }
+  ]
+}
+```
+
+### pyproject.toml
+
+```toml
+```
+
 
 ## pipx
 
@@ -783,6 +924,37 @@ subprocess.Popen(cmd, **kwargs)
 poetry new --src 
 ```
 
+## PyPI
+
+最原始的打包发布一般是
+
+```bash
+python -m build
+python -m twine upload --repository testpypi dist/*
+```
+
+`build` 包是所谓的 build frontend, 其实 pip 也属于 build frontend. 它们会触发 build backend (也就是 `pyproject.toml`) 里的 `build-system` 定义的:
+
+```toml
+# setuptools
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# poetry
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+```
+
+而 `twine` 包用于上传至 PyPI
+
+而 poetry 包装了所有的这些过程 (底层不一定会使用 build, pip, twine 这些工具)
+
+## Github Action
+
+- 基本原理及入门参考 B 站视频
+- 一个例子: happycow
 
 ## 附录
 
