@@ -1108,3 +1108,17 @@ GET /pypi/<project_name>/<version>/json
 https://pypi.org/pypi/pip/json
 https://pypi.org/pypi/pip/23.3.1/json
 ```
+
+### pip: vendoring
+
+- 官方文档: [https://pip.pypa.io/en/latest/development/vendoring-policy/#rationale](https://pip.pypa.io/en/latest/development/vendoring-policy/#rationale)
+- vendoring 工具: [https://github.com/pradyunsg/vendoring](https://github.com/pradyunsg/vendoring)
+
+在过去 pip 的内部实现需要自己造很多轮子, 例如网络请求. 这是为了避免有第三方依赖项, 导致 pip 本身出现问题, 例如: 假设 pip 将 requests==2.31.0 作为依赖项, 如果使用者用 pip 将 requests 进行了降级或者升级, 这可能会导致下次使用 pip 时出现问题, 然而, 这个时候没有很好的解决问题的方式了. 因此 pip 只好极力避免依赖项, 而是自己造所有的轮子. 后来, pip 采用了另一种策略, 例如假设 pip 需要使用 requests==2.31.0 的功能, pip 就将 requests==2.31.0 的代码全部拷贝进自己本身的代码里, 并做适当的小修改. 这样一来, 就能避免造轮子, 而且也不会引发前面的问题了: pip 升级或降级 requests 不会影响它内部拷贝的那一份 requests==2.31.0. 这种拷贝的做法就被称为 vendoring.
+
+一些实现细节:
+
+- [vendoring](https://github.com/pradyunsg/vendoring) 只为 pip 服务, 不是通用工具, pip 代码库本身的 `pyproject.toml` 文件里包含 `[tool.vendoring]` 的配置项
+- `pip/_vendor/vendor.txt` 记录了复制的三方包代码的版本号
+
+备注: 假设你的环境底下甚至没有 pip, setuptools 等, 实际上也可以去下载 whl 文件, 将其解压至 site-packages 目录进行手工安装
