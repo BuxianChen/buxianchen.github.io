@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(P0) Python 包管理与CI/CD开发工具"
+title: "(Alpha) Python 包管理与CI/CD开发工具"
 date: 2024-04-16 10:05:04 +0800
 labels: [python, package manager]
 ---
@@ -688,7 +688,7 @@ pre-commit install
 git add .pre-commit-config.yaml  # 此例参考 https://github.com/open-mmlab/mmdeploy/blob/4bb9bc738c9008055fbc9347f46da70ee60fdad3/.pre-commit-config.yaml
 git commit -m "add pre-commit config"
 git add a.py
-git commit -m "add a.py"   # 初次提交时会缓存 repo, 注意这些 repo 是直接 git clone 到缓存目录的, 而不是 pip install 到当前环境
+git commit -m "add a.py"   # 初次提交时会缓存 repo, 注意这些 repo 是直接 git clone 到缓存目录, 并且新建虚拟环境, 而不是 pip install 到当前环境
 ```
 
 执行逻辑
@@ -704,7 +704,7 @@ repos:
   - repo: https://github.com/PyCQA/flake8  # 注意如果将 github 仓库地址改为 local, 那么就不会缓存至目录并创建独立的虚拟环境
     rev: 4.0.1
     hooks:
-      - id: flake8
+      - id: flake8  # 注意这个 id 不能随意写, 它与 https://github.com/PyCQA/flake8 的 `.pre-commit-hooks.yaml` 里的一个 hook id 对应.
         args: ["--exclude=*/client/inference_pb2.py, \
                 */client/inference_pb2_grpc.py, \
                 tools/package_tools/packaging/setup.py"]
@@ -989,7 +989,7 @@ cmd = ['flake8', '--exclude=*/client/inference_pb2.py, */client/inference_pb2_gr
 subprocess.Popen(cmd, **kwargs)
 ```
 
-## poetry (TODO)
+## poetry
 
 ### poetry 命令
 
@@ -1056,7 +1056,7 @@ poetry export -f requirements.txt --output requirements.txt
 
 ### `pyproject.toml`
 
-TODO
+参考前文
 
 ## PyPI
 
@@ -1087,8 +1087,54 @@ build-backend = "poetry.core.masonry.api"
 
 ## Github Action
 
-- 基本原理及入门参考 B 站视频
+- (推荐) 基本原理及入门参考 [B站视频](https://www.bilibili.com/video/BV1aT421y7Ar/)
 - 一个例子: [https://github.com/BuxianChen/happycow](https://github.com/BuxianChen/happycow)
+
+基本的架子是: `.github/workflows/publish-to-pypi.yaml`
+
+```yaml
+name: Publish Python 🐍 distribution 📦 to PyPI and TestPyPI
+on: push  # 触发时机
+jobs:
+  build:   # 每个 job 需要在一个 docker 容器内完成, 每个 job 又可以继续拆解为多个 step, 注意是否拆解为 step 纯粹是为了逻辑上更直观, 以及监控 CI/CD 日志时更好定位问题
+    name: Build distribution 📦
+    runs-on: ubuntu-latest  # 执行下述 steps 的基础 docker 镜像
+    steps:
+    - uses: actions/checkout@v4  # step 的写法1: 使用现成的 CI/CD 工具, 猜测实际上也是一段 shell 脚本
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:                      # 使用现成的 CI/CD 工具, 带配置参数
+        python-version: "3.x"
+    - name: Install pipx and poetry
+      run: python3 -m pip install pipx --user && pipx install poetry  # step 的写法 2: 直接运行命令
+    - name: Build a binary wheel and a source tarball
+      run: poetry build
+    - name: Store the distribution packages
+      uses: actions/upload-artifact@v3
+      with:
+        name: python-package-distributions
+        path: dist/
+  publish-to-pypi:  # 第二个 job
+    name: >-
+      Publish Python 🐍 distribution 📦 to PyPI
+    if: startsWith(github.ref, 'refs/tags/')  # 条件触发: 只有push的是tag时才触发
+    needs:
+    - build  # job 间的依赖关系: 必须等前一个 job 完成才开始
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/happycow 
+    permissions:
+      id-token: write
+    steps:
+    - name: Download all the dists
+      uses: actions/download-artifact@v3
+      with:
+        name: python-package-distributions
+        path: dist/
+    - name: Publish distribution 📦 to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+```
 
 ## 附录
 
