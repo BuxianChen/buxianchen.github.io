@@ -102,7 +102,7 @@ PKG-INFO   # 这个文件的内容和 src/pip.egg-info/PKG-INFO 完全一致
 - 后来由于 `setup.py` 被认为不安全, 因为 `python setup.py install` 会真的执行代码, 因此代码中可以包含有危险操作, 例如删除系统文件, 所以希望改为配置文件 `setup.cfg`, 然而在一些比较复杂的情况下, `setup.cfg` 不够灵活, 可能还是需要 `setup.py`, 因此对于 `setup.py` 的态度应该是能不用就尽量不用, 但需要用时就用
 - 再后来, CI/CD 工具越来越多, 每个工具都有一个特定名字的配置文件, 导致仓库的根目录总是会有一堆配置文件, 非常混乱, 因此大家约定都去读一个统一的文件 `pyproject.toml`, 而对于 setuptools 的来说, 就是把 `setup.cfg` 转为 `pyproject.toml` 的写法, 仍然是能只用 `pyproject.toml` 则用, 不得已还是可以继续用 `setup.py`, 而 `setup.cfg` 应该被弃用
 
-这里我们举一个使用 `setup.py` 的例子: TODO
+一个例子: [https://github.com/BuxianChen/happypig](https://github.com/BuxianChen/happypig)
 
 ## toml
 
@@ -991,16 +991,72 @@ subprocess.Popen(cmd, **kwargs)
 
 ## poetry (TODO)
 
-### TL;DR
+### poetry 命令
 
-- `poetry.lock` 文件不应该被 ignore, 而应该交由 git 管理.
+- `poetry.lock` 文件推荐不应该被 ignore, 而应该交由 git 管理.
 - poetry 现在的 installer 貌似已经不依赖于 pip 了. [blog](https://python-poetry.org/blog/announcing-poetry-1.4.0/).
 - poetry 可以用于包含 C++ 代码的项目, 但官方文档似乎没有过多介绍
 - 可以在 poetry 命令里加上 `-vvv` 选项, 观察其行为, 例如: `poetry update -vvv`, `poetry config --list -vvv`
+- poetry 支持两种模式: package mode 和 no package mode, 代表了两种使用 poetry 的目标, 前者是开发一个 python 包, 后者是只是写一些 python 脚本, 但希望用 peotry 进行包的依赖管理.
+- poetry 中 group 只是逻辑上的划分, 不同的 group 必须相互兼容, 即不能出现一个 group 中的包与另一个 group 中的包发生冲突
 
+
+完整命令介绍参考: [https://python-poetry.org/docs/cli](https://python-poetry.org/docs/cli)
+
+```bash
+# 初始化: 从零开始, 以下命令会生成样板项目目录
+poetry new poetry-demo        # flat layout
+poetry new --src poetry-demo  # src layout
+# 关于 flat layout 和 src layout 可以参考这个讨论
+# https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/
+
+# 初始化: 对于已经已经存在的项目, 以下命令会用命令行交互式的方式生成 pyproject.toml
+poetry init
+
+# 添加包: 往 pyproject.toml 文件中添加包, 并且安装包, 并且将安装的包写入 peotry.lock 文件中
+poetry add numpy                 # 把 numpy 放在 [tool.poetry.dependencies]
+poetry add pytest --group test   # 功能与上面相同, 但把 pytest 放在组里 [tool.poetry.group.test.dependencies]
+
+# 删除包: 往 pyproject.toml 文件中移除包, 并且移除包, 并且更新 peotry.lock 文件
+poetry remove numpy                 # 把 numpy 从 [tool.poetry.dependencies] 移除
+poetry remove pytest --group test   # 从 group 里移除
+
+# 更新包: 更新包, 并且修改 pyproject.toml 及 poetry.lock 文件
+poetry update numpy
+poetry update
+
+# 如果存在 poetry.lock 文件, 则严格按照 poetry.lock 安装相应的包, 否则按照 pyproject.toml 文件安装, 并生成 poetry.lock 文件
+poetry install
+# poerty.toml 文件里的某些 group 设置了 optional = true 的, 需要手工指定 with 进行安装
+poetry install --with test,docs
+# 完全按照 poetry.lock 文件来安装/更新包, 并在当前环境中移除所有不在 poetry.lock/pyproject.toml 中记录的包
+poetry install --sync  # !!! 请确保自己知道在做什么, 会删除不在 poetry.lock/pyproject.toml 中记录的包
+
+# 展示 poetry 管理的包, 注意: 如果混用 pip 和 poetry 可能会造成混乱, 例如单独用 pip 额外安装的包不会显示在 poetry show 的输出里
+poetry show
+
+# 打包为源码格式 .tar.gz 和二进制格式 .whl
+poetry build
+
+# 发布至 PyPI
+poetry publish
+poetry publish --build  # build + publish
+
+# 运行脚本, 基本上就是加上前缀 poetry run. 注意当 poetry 实际创建了新的虚拟环境时, 前缀是必须的, 但是如果 poetry 没有创建虚拟环境时, 前缀不必要
+poetry run python xx.py
+poetry run pytest
+poetry run package-entrypoint  # 包的 entrypoint
+
+# 进入虚拟环境 (创建子 shell, 输入 exit 退出)
+poetry shell
+
+# 转换为 requirements.txt
+poetry export -f requirements.txt --output requirements.txt
 ```
-poetry new --src 
-```
+
+### `pyproject.toml`
+
+TODO
 
 ## PyPI
 
@@ -1032,7 +1088,7 @@ build-backend = "poetry.core.masonry.api"
 ## Github Action
 
 - 基本原理及入门参考 B 站视频
-- 一个例子: happycow
+- 一个例子: [https://github.com/BuxianChen/happycow](https://github.com/BuxianChen/happycow)
 
 ## 附录
 
