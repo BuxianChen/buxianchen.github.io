@@ -1266,6 +1266,7 @@ chain = (configurable_prompt | configurable_fake_retriever)
 使用 `python ls_test.py` 启动, 在 `http://localhost:8000/chain/playground/` 页面可配置上面设定的配置项
 
 ```python
+# ls_test.py
 from fastapi import FastAPI
 from langchain.schema import BaseOutputParser
 from langserve import add_routes
@@ -1276,7 +1277,8 @@ app = FastAPI(
   description="A simple api server using Langchain's Runnable interfaces",
 )
 
-# 3. Adding chain route
+# chain 的定义如上, 此处略
+
 add_routes(
     app,
     chain,
@@ -2188,14 +2190,218 @@ Final Answer: LangChain is a company that offers a framework for building and de
 
 ![](../assets/figures/langchain/langsmith-example.png)
 
-## LangServe (TODO)
+## LangServe
 
-涉及到 langchain-cli
+### `from langserve import add_routes`
+
+这种用法最为灵活, 但需要自己写的代码最多, 使用方式上如下:
+
+```python
+# serve.py
+from fastapi import FastAPI
+from langserve import add_routes
+
+app = FastAPI(
+  title="LangChain Server",
+  version="1.0",
+  description="A simple api server using Langchain's Runnable interfaces",
+)
+
+# 此处需要将 chain 的定义补充完整, 从略. chain 只要是一个 runnable 即可
+
+add_routes(
+    app,
+    chain,
+    path="/chain",
+)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+正常使用 `python serve.py` 启动即可, `add_routes` 会增加一些路由:
+
+- `http://127.0.0.1:8000/pirate-speak/playground/`
+- `http://127.0.0.1:8000/pirate-speak/input_schema/`
+- `http://127.0.0.1:8000/pirate-speak/output_schema/`
+- `http://127.0.0.1:8000/pirate-speak/config_schema/`
+- `http://127.0.0.1:8000/pirate-speak/invoke/`
+- `http://127.0.0.1:8000/pirate-speak/batch/`
+- `http://127.0.0.1:8000/pirate-speak/stream/`
+- `http://127.0.0.1:8000/pirate-speak/stream_log/`
+
+`add_routes` 函数有一个参数 `playground_type`, 默认值为 `"default"`, 此时前端的试用界面会是单次调用 (历史对话需要手动填充), 可以将其设置为 `"chat"`, 前端界面会变成多轮对话形式 (当然这要求 `chain` 满足一定的条件, 可以参考[pirate_speak_configurable](https://github.com/langchain-ai/langchain/tree/master/templates/pirate-speak-configurable/pirate_speak_configurable))
+
+### langchain-cli
+
+作为可执行脚本, `langchain-cli` 与 `langchain` 命令完全一样, [cli/pyproject.toml](https://github.com/langchain-ai/langchain/blob/master/libs/cli/pyproject.toml) 中有这种配置:
+
+```
+[tool.poetry.scripts]
+langchain = "langchain_cli.cli:app"
+langchain-cli = "langchain_cli.cli:app"
+```
+
+可以使用 `langchain --help` 查看使用方式, 包括以下命令:
 
 ```bash
+# langchain app 主要是用于拉取 langchain 官方 Github 仓库里的 template
+langchain app new ...
+langchain app add ...
+langchain app remove ...
+langchain app serve ...
+
+# langchain template 主要是用于创建 template
+langchain template new ...
+langchain template serve ...
+langchain template list ...
+
+langchain serve ...  # 合并 langchain app serve 和 langchain template serve
+
+langchain integration new ...  # langchain 的开发人员工具, 在 libs/partners 目录下运行此命令, 以新增一个 partner 包, 例如 langchain-openai
+```
+
+### langchain-cli: langchain app
+
+`langchain app` 主要用于拉取 GitHub 上的模板, 按照 [quickstart](https://github.com/langchain-ai/langchain/blob/master/templates/README.md) 说明, 使用
+
+```bash
+pip install -U langchain-cli
+langchain app new my-app  # 直接回车, 创建 my-app 目录
+cd my-app
+langchain app add pirate-speak  # 在 packages 目录拉取 langchain/template/pirate-speak, 并使用 pip install -e packages/pirate-speak 安装
+
+# 在 app/server.py 中做一些修改
+# from pirate_speak.chain import chain as pirate_speak_chain
+# add_routes(app, pirate_speak_chain, path="/pirate-speak")
+
+export OPENAI_API_KEY=sk-...
+langchain serve  # 基本上就是假设脚本是 app/server.py
+```
+
+会自动组织成这样类似的项目结构
+
+```
+.
+├── Dockerfile
+├── README.md
+├── app
+│   ├── __init__.py
+│   └── server.py
+├── packages
+│   ├── README.md
+│   └── pirate-speak
+│       ├── LICENSE
+│       ├── README.md
+│       ├── pirate_speak
+│       │   ├── __init__.py
+│       │   └── chain.py
+│       ├── poetry.lock
+│       ├── pyproject.toml
+│       └── tests
+│           └── __init__.py
+└── pyproject.toml
+```
+
+一个修改好的 `serve.py` 如下:
+
+```python
+from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from langserve import add_routes
+from pirate_speak.chain import chain as pirate_speak_chain
+
+app = FastAPI()
+
+@app.get("/")
+async def redirect_root_to_docs():
+    return RedirectResponse("/docs")
+
+add_routes(app, pirate_speak_chain, path="/pirate-speak", playground_type="chat")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+本质上 `langchain serve` 在这个情形下等价于以下任何一个
+
+```bash
+langchain app serve
+uvicorn app.server:app --host 127.0.0.1 --port 8000
+```
+
+### langchain-cli: langchain template
+
+`langchain template` 命令也是 langchain 的开发工具, 主要是在 langchain Github 仓库的 `templates` 下新建一个模板
+
+```bash
+lanchain template new my-template
+cd my-template
+pip install -e .  # 必须
 langchain serve
-langchain app
-langchain template
+```
+
+目录结构
+
+```
+.
+└── my-template
+    ├── LICENSE
+    ├── README.md
+    ├── my_template
+    │   ├── __init__.py
+    │   └── chain.py
+    ├── pyproject.toml
+    └── tests
+        └── __init__.py
+```
+
+### pip install -e
+
+为何需要使用 `pip install -e .` 将 `my-template` 进行安装? 原因是 `langchain serve` 的本质是执行类似这种 python 代码:
+
+```python
+app = FastAPI()
+
+package_root = get_package_root()
+pyproject = package_root / "pyproject.toml"
+package = get_langserve_export(pyproject)
+mod = __import__(package["module"], fromlist=[package["attr"]])
+chain = getattr(mod, package["attr"])
+
+add_routes(
+    app,
+    chain,
+    config_keys=config_keys,
+    playground_type=playground_type,
+)
+uvicorn.run(
+    app, factory=True, reload=True,
+    port=port if port is not None else 8000,
+    host=host_str
+)
+
+# pyproject.toml 的相关内容
+# [tool.langserve]
+# export_module = "my_template"
+# export_attr = "chain"
+```
+
+有没有办法避免 `pip install -e .`? 以下方案或许可性, 待验证
+
+```python
+import importlib.util
+import os
+os.environ["OPENAI_API_KEY"] = "sk-xx"
+
+module_path = "/path/to/my-template/my_template/chain.py"
+module_name = "chain"
+spec = importlib.util.spec_from_file_location(module_name, module_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+chain = getattr(module, 'chain')
 ```
 
 ## Contributing
