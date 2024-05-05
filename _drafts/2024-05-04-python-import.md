@@ -14,6 +14,10 @@ labels: [python,import]
 - [3] Python 官方文档, 对内置模块 importlib 的描述: [https://docs.python.org/3/library/importlib.html](https://docs.python.org/3/library/importlib.html)
 - [4] Python 官方文档, 对内置函数 `__import__` 的描述: [https://docs.python.org/3/library/functions.html#import__]（https://docs.python.org/3/library/functions.html#import__
 
+## FAQ
+
+所谓的 module 实际上就是 `types.ModuleType` 类型的实例, 而 package 是指带有 `__path__` 属性的 module
+
 ## import 语句与 `__import__`
 
 import 语句是 `__import__` 函数的语法糖 ([3](https://docs.python.org/3/library/importlib.html#importlib.import_module)), import 语句的语法是以下几种 (精准定义[1](https://docs.python.org/3/reference/simple_stmts.html#import)):
