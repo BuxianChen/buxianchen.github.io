@@ -77,6 +77,8 @@ PKG-INFO   # 这个文件的内容和 src/pip.egg-info/PKG-INFO 完全一致
   - WHEEL
 ```
 
+备注: 有些包会出现类似这种情况, 例如: `pip install GitPython` 会安装这两个目录, `git/` 和 `GitPython-3.1.43.dist-info/`, 注意前缀并不相同, 而 `GitPython-3.1.43.dist-info/top_level.txt` 里的内容是 `git`
+
 这里先暂且不深入这两种格式的发布过程 Github -> .tar.gz/.whl -> PyPI. 我们先看使用者的视角, 使用者安装的过程通常是由 `pip install` 发起的, 这个过程大体上是:
 
 1. 先去尝试下载匹配的 `.whl` 文件, 然后基本上就是直接将 `.whl` 文件解压然后丢到 `site-packages` 文件夹下, 以上面的 `pip==23.3.1` 为例, 就是直接在 `site-package` 文件夹下增加了 `pip` 和 `pip.egg-info` 文件夹.
@@ -1224,3 +1226,15 @@ https://pypi.org/pypi/pip/23.3.1/json
 - `pip/_vendor/vendor.txt` 记录了复制的三方包代码的版本号
 
 备注: 假设你的环境底下甚至没有 pip, setuptools 等, 实际上也可以去下载 whl 文件, 将其解压至 site-packages 目录进行手工安装
+
+### 杂录
+
+pip 可以直接安装 Git 仓库, 参考: [https://pip.pypa.io/en/stable/topics/vcs-support/](https://pip.pypa.io/en/stable/topics/vcs-support/)
+
+```
+pip install git+https://github.com/username/MyProject.git@master   # 通常是分支名
+pip install git+https://github.com/username/MyProject.git@v1.0     # 通常是 tag 名
+pip install git+https://github.com/username/MyProject.git@da39a3ee5e6b4b0d3255bfef95601890afd80709  # 通常是 commit-id
+pip install git+https://github.com/username/MyProject.git@refs/pull/123/head  # 通常是一个 PR, 其中 123 是 PR 的编号
+pip install git+https://github.com/username/MyProject.git@master#subdirectory=pkg_dir   # 分支名加子目录
+```

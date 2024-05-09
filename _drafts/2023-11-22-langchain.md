@@ -2190,7 +2190,7 @@ Final Answer: LangChain is a company that offers a framework for building and de
 
 ![](../assets/figures/langchain/langsmith-example.png)
 
-## LangServe
+## LangServe & langchain-cli
 
 ### `from langserve import add_routes`
 
@@ -2262,6 +2262,20 @@ langchain serve ...  # 合并 langchain app serve 和 langchain template serve
 langchain integration new ...  # langchain 的开发人员工具, 在 libs/partners 目录下运行此命令, 以新增一个 partner 包, 例如 langchain-openai
 ```
 
+- `langchain template new` 的主要操作是复制 [package_template](https://github.com/langchain-ai/langchain/tree/master/libs/cli/langchain_cli/package_template), 并做一些 packagename 之类的替换, 注意这个 template 会随着 `pip install langchain-cli` 安装在本机的 `site-packages/langchain_cli` 目录下
+- `langchain app new` 类似, 复制 [project_template](https://github.com/langchain-ai/langchain/tree/master/libs/cli/langchain_cli/project_template), 并做一些替换, 这个 template 会随着 `pip install langchain-cli` 安装在本机的 `site-packages/langchain_cli` 目录下
+- `langchain app add` 的执行逻辑是先对 `app.firstpartyhq.com` 网址发请求告知需要拉取的模板, 但不一定需要成功, 猜测是 langchain 公司可以以此分析用户行为, 然后对 GitHub 发起请求拷贝 template (可以是 langchain 的官方 repo 或者是其他 repo). 具体拷贝的逻辑是:
+  - 先使用 git clone/git pull 拷贝 (借助 `GitPython` 包的相关方法) 至 `typer.get_app_dir("langchain")/git_repos/` 目录下 (在 linux 下通常是 `~/.config/langchain/git_repos` 目录), 目录结构类似于
+    ```
+    ~/.config/langchain/git_repos
+      - langchain_ai_langchain_git_4fe265c3/  # 此为 git 管理的目录, 注意这里的 4fe265c3 是依据仓库名和分支名计算的, 所以每个仓库的每个分支会建一个缓存目录
+      - xx/
+    ```
+  - 然后再将上面的“缓存目录”拷贝至当前 `langchain app` 的 `packages` 目录下 (注意不拷贝 `.git` 目录, 也就是只拷贝工作目录)
+- `langchain app remove` 的执行逻辑就是简单地删除 `langchain app` 的 `packages` 目录下相应的目录
+
+TODO: langchain-cli 的实现里比较重度依赖 `typer` 这个包, 是对 `click` 的封装, 似乎有很多包的命令行工具依赖于 `click`, 有空时可以仔细研究下这个包
+
 ### langchain-cli: langchain app
 
 `langchain app` 主要用于拉取 GitHub 上的模板, 按照 [quickstart](https://github.com/langchain-ai/langchain/blob/master/templates/README.md) 说明, 使用
@@ -2280,7 +2294,7 @@ export OPENAI_API_KEY=sk-...
 langchain serve  # 基本上就是假设脚本是 app/server.py
 ```
 
-会自动组织成这样类似的项目结构
+会得到这样类似的项目结构
 
 ```
 .
@@ -2332,6 +2346,65 @@ langchain app serve
 uvicorn app.server:app --host 127.0.0.1 --port 8000
 ```
 
+#### langchain app add 详解
+
+`langchain app add --help` 的输出如下
+
+```
+ Usage: langchain app add [OPTIONS] [DEPENDENCIES]...
+
+ Adds the specified template to the current LangServe app.
+ e.g.: langchain app add extraction-openai-functions langchain app add
+ git+ssh://git@github.com/efriis/simple-pirate.git
+
+╭─ Arguments ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   dependencies      [DEPENDENCIES]...  The dependency to add [default: None]                                      │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ─────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│    --api-path                   TEXT  API paths to add                                                            │
+│    --project-dir                PATH  The project directory [default: None]                                       │
+│    --repo                       TEXT  Install templates from a specific github repo instead                       │
+│    --branch                     TEXT  Install templates from a specific branch                                    │
+│ *  --pip            --no-pip          Pip install the template(s) as editable dependencies [default: no-pip]      │
+│                                       [required]                                                                  │
+│    --help                             Show this message and exit.                                                 │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+用例
+
+```bash
+langchain app new my-app
+cd my-app
+
+langchain app add pirate-speak
+
+# 上面的命令等价于以下完整形式
+# 等价方式1: 用 dependencies 直接确定
+# --project-dir 用于指定整个的根目录, 由于已经切换到了 my-app 目录, 所以不用指定(或者说指定为了pwd)
+# --api-path 用于指定本地安装的目录名, 例如可以将 pirate-speak 下载后重命名为 local-speak
+#     但注意: --api-path 并没有修改 pyproject.toml, 也就是没有改 pip install -e 时的包名, 所以作用有限(不确定是 langchain 的 feature 还是 bug)
+langchain app add \ 
+    git+https://github.com/langchain-ai/langchain.git@master#subdirectory=templates/pirate-speak \
+    --api-path pirate-speak \
+    --pip
+
+# 等价方式2: 用 dependencies 和 --repo 以及 --branch 确定
+langchain app add \ 
+    templates/pirate-speak \
+    --api-path pirate-speak \
+    --repo langchain-ai/langchain
+    --branch master \
+    --pip
+
+# 备注: 在等价方式 1 中, 如果写做下面这种方式会导致缓存的 langchain_ai_langchain_git_4fe265c3 目录名的后面几位 hash 不一致, 会造成不必要的重复缓存
+# 在等价方式及原始简写里, hash 的输入是:
+# (1) 仓库URL: https://github.com/langchain-ai/langchain.git (2) 分支名: master
+# 而改成 ssh 协议后, hash 的输入是:
+# (1) 仓库URL: ssh://git@github.com/langchain-ai/langchain.git (2) 分支名: master
+# git+ssh://git@github.com/langchain-ai/langchain.git@master#subdirectory=templates/pirate-speak \
+```
+
 ### langchain-cli: langchain template
 
 `langchain template` 命令也是 langchain 的开发工具, 主要是在 langchain Github 仓库的 `templates` 下新建一个模板
@@ -2343,7 +2416,7 @@ pip install -e .  # 必须
 langchain serve
 ```
 
-目录结构
+会得到这样类似的项目结构(参考: [package_template](https://github.com/langchain-ai/langchain/tree/master/libs/cli/langchain_cli/package_template))
 
 ```
 .
