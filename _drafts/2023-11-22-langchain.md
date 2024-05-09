@@ -64,7 +64,7 @@ Langchain 的本质就是以一种作者认为的模块化的方式进行提示�
 
 继承关系图说明: 以红色作为框线的方框代表的是实际可运行的类(其余均为抽象类), 由于 `langchain>=0.0.339rc0` (2023/11/22) 开始, langchain 代码库进行了一些重构, 主要是将一部分内容单独抽出来放在了 `langchain_core` 模块中, 同一个框中的两个类是别名关系.
 
-LLM/Chat Model 的一个实际例子是 `ChatOpenAI` 类, Prompt Template 的一个实际例子是 `PromptTemplate` 类, 而 Output Parser 需要用户自己继承自 `BaseOutputParser`. 而这三类东西都继承自 `Runable` 抽象类, 这种继承自 `Runable` 的类都称为 LCEL. 所以如果希望研究源码, 可以先研究 `Runable` 抽象类. 在此之前先看一些例子:
+LLM/Chat Model 的一个实际例子是 `ChatOpenAI` 类, Prompt Template 的一个实际例子是 `PromptTemplate` 类, 而 Output Parser 需要用户自己继承自 `BaseOutputParser`. 而这三类东西都继承自 `Runnable` 抽象类, 这种继承自 `Runnable` 的类都称为 LCEL. 所以如果希望研究源码, 可以先研究 `Runnable` 抽象类. 在此之前先看一些例子:
 
 以下例子参考: [https://python.langchain.com/docs/get_started/quickstart](https://python.langchain.com/docs/get_started/quickstart)
 
@@ -990,6 +990,59 @@ from langchain_core.messages.system import SystemMessage, SystemMessageChunk
 from langchain_core.messages.tool import ToolMessage, ToolMessageChunk  # 代表用户自行调用工具后得到的结果
 ```
 
+一般来说, 优先使用 `AIMessage`, `HumanMessage`, `FunctionMessage`, `ToolMessage`, `SystemMessage`. 例如:
+
+```python
+from langchain_community.chat_models import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import ChatMessage, AIMessage, HumanMessage
+
+_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Translate user input into pirate speak",
+        ),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{text}"),
+    ]
+)
+_model = ChatOpenAI()
+chain = _prompt | _model
+
+input_1 = {
+    "chat_history": [
+        ChatMessage(content="hello", role="user"),     # 注意对于openai来说这里必须设置为 "user", 而不能是 "human", 但是不同的模型可能不一样
+        ChatMessage(content="hello", role="assistant"),# 注意对于openai来说这里必须设置为 "assistant", 而不能是 "ai", 但是不同的模型可能不一样
+    ],
+    "text": "Who are you"
+}
+
+input_2 = {
+    "chat_history": [
+        AIMessage(content="hello"),    # 使用 AIMessage 可以避免上面使用 ChatMessage 必须设置对 role 的烦扰
+        HumanMessage(content="hello"),
+    ],
+    "text": "Who are you"
+}
+
+input_3 = {
+    "chat_history": [
+        ("human", "hello"),      # 也可以简化用 tuple 来代替 message
+        ("assistant", "hello")
+    ],
+    "text": "Who are you"
+}
+
+res1: AIMessage = chain.invoke(input_1)
+res2: AIMessage = chain.invoke(input_2)
+res3: AIMessage = chain.invoke(input_3)
+
+print("res1", res1.content)
+print("res2", res2.content)
+print("res3", res3.content)
+```
+
 ### Runnable (LCEL) (TODO)
 
 本节内容作为 [https://python.langchain.com/docs/expression_language/](https://python.langchain.com/docs/expression_language/) 的补充与解释
@@ -1298,14 +1351,14 @@ if __name__ == "__main__":
 from langchain_core.runnables import RunnableSerializable
 from langchain_core.runnables.utils import Input, Output
 
-class CustomRunable(RunnableSerializable[Input, Output]):
+class CustomRunnable(RunnableSerializable[Input, Output]):
     def invoke(self, input, config=None, **kwargs):
         return {
             "input": input,
             **kwargs
         }
     
-CustomRunable().bind(b=2).invoke(1, a=2)  # {"input": 1, "a": 2, "b": 2}
+CustomRunnable().bind(b=2).invoke(1, a=2)  # {"input": 1, "a": 2, "b": 2}
 ```
 
 例子2
@@ -2192,14 +2245,34 @@ Final Answer: LangChain is a company that offers a framework for building and de
 
 ## LangServe & langchain-cli
 
-### `from langserve import add_routes`
+### LangServe
 
-这种用法最为灵活, 但需要自己写的代码最多, 使用方式上如下:
+langserve 并不复杂, 目前 (2024/05/09) 应该也已基本稳定, 更新不多. 可以作为一个 FastAPI + React 的项目来学习, 下面仅介绍最基础的用法, 更复杂的用法直接参考 GitHub 仓库中的 [README](https://github.com/langchain-ai/langserve/tree/main) 以及 [examples](https://github.com/langchain-ai/langserve/tree/main/examples).
+
+langserve 的 python 用法实际上主要是: `add_routes` 和 `RemoteRunnable`, 其中前者是服务端代码, 而后者是客户端代码. 如果需要更深入用, 服务端还可以使用 `APIHandler`, 但这里不介绍
+
+#### Server: `add_routes`
 
 ```python
 # serve.py
 from fastapi import FastAPI
 from langserve import add_routes
+
+from langchain_community.chat_models import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "Translate user input into pirate speak",
+        ),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{text}"),
+    ]
+)
+_model = ChatOpenAI()
+chain = _prompt | _model
+
 
 app = FastAPI(
   title="LangChain Server",
@@ -2207,12 +2280,10 @@ app = FastAPI(
   description="A simple api server using Langchain's Runnable interfaces",
 )
 
-# 此处需要将 chain 的定义补充完整, 从略. chain 只要是一个 runnable 即可
-
 add_routes(
     app,
     chain,
-    path="/chain",
+    path="/mychain",
 )
 
 if __name__ == "__main__":
@@ -2222,18 +2293,127 @@ if __name__ == "__main__":
 
 正常使用 `python serve.py` 启动即可, `add_routes` 会增加一些路由:
 
-- `http://127.0.0.1:8000/pirate-speak/playground/`
-- `http://127.0.0.1:8000/pirate-speak/input_schema/`
-- `http://127.0.0.1:8000/pirate-speak/output_schema/`
-- `http://127.0.0.1:8000/pirate-speak/config_schema/`
-- `http://127.0.0.1:8000/pirate-speak/invoke/`
-- `http://127.0.0.1:8000/pirate-speak/batch/`
-- `http://127.0.0.1:8000/pirate-speak/stream/`
-- `http://127.0.0.1:8000/pirate-speak/stream_log/`
+- `http://127.0.0.1:8000/mychain/playground/`
+- `http://127.0.0.1:8000/mychain/input_schema/`
+- `http://127.0.0.1:8000/mychain/output_schema/`
+- `http://127.0.0.1:8000/mychain/config_schema/`
+- `http://127.0.0.1:8000/mychain/invoke/`
+- `http://127.0.0.1:8000/mychain/batch/`
+- `http://127.0.0.1:8000/mychain/stream/`
+- `http://127.0.0.1:8000/mychain/stream_log/`
+- `http://127.0.0.1:8000/mychain/stream_event/`
 
-`add_routes` 函数有一个参数 `playground_type`, 默认值为 `"default"`, 此时前端的试用界面会是单次调用 (历史对话需要手动填充), 可以将其设置为 `"chat"`, 前端界面会变成多轮对话形式 (当然这要求 `chain` 满足一定的条件, 可以参考[pirate_speak_configurable](https://github.com/langchain-ai/langchain/tree/master/templates/pirate-speak-configurable/pirate_speak_configurable))
+`add_routes` 函数有一个参数 `playground_type`, 默认值为 `"default"`, 此时前端的试用界面会是单次调用 (历史对话需要手动填充), 可以将其设置为 `"chat"`, 前端界面会变成多轮对话形式 (可以参考[pirate_speak_configurable](https://github.com/langchain-ai/langchain/tree/master/templates/pirate-speak-configurable/pirate_speak_configurable)), 可以使用 chat 模式的[条件](https://github.com/langchain-ai/langserve/tree/main?tab=readme-ov-file#chat-playground)是 chain 的入参是一个字典, 且满足如下条件之一:
+
+- (推荐) 只包含一个 key, 且值类型为 `List[ChatMessage]`
+- 包含两个 key, 其中一个 key 的值类型为 `List[ChatMessage]`, 而另一个 key 的值类型为 string
+
+备注: ChatMessage 实际上最好是用 `AIMessage`, `HumanMessage`, `FunctionMessage`, `ToolMessage`, `SystemMessage` 这些来替代
+
+
+#### Client: `RemoteRunnable`
+
+```python
+from langserve import RemoteRunnable
+from langchain_core.messages import ChatMessage, AIMessage, HumanMessage
+
+def use_langserve():
+    # OK
+    input_1 = {
+        "chat_history": [
+            ChatMessage(content="hello", role="user"),
+            ChatMessage(content="hello", role="assistant"),
+        ],
+        "text": "Who are you"
+    }
+
+    # OK
+    input_2 = {
+        "chat_history": [
+            AIMessage(content="hello"),
+            HumanMessage(content="hello"),
+        ],
+        "text": "Who are you"
+    }
+
+    # Error !!
+    input_3 = {
+        "chat_history": [
+            ("human", "hello"),
+            ("assistant", "hello")
+        ],
+        "text": "Who are you"
+    }
+
+    runnable = RemoteRunnable("http://localhost:8000/mychain")
+    res: AIMessage = runnable.invoke(input_2)
+    return res
+
+def use_requests():
+    import requests
+    data = {
+        "input": {
+            "chat_history": [
+                {
+                    "content": "Hello",
+                    "type": "ai",
+                },
+                {
+                    "content": "Hello",
+                    "type": "human",
+                },
+            ],
+            "text": "Who are you"
+        }
+    }
+    res = requests.post(
+        "http://localhost:8000/mychain/invoke",
+        json=data,
+    )
+    res = res.json()
+
+    # res:
+    # {
+    #     'output': {
+    #         'content': "Arr matey, I be a friendly pirate assistant here to help ye with yer queries. What be ye needin' help with today?",
+    #         'additional_kwargs': {},
+    #         'response_metadata': {
+    #             'token_usage': {
+    #                 'completion_tokens': 28,
+    #                 'prompt_tokens': 30,
+    #                 'total_tokens': 58
+    #             },
+    #         'model_name': 'gpt-3.5-turbo',
+    #         'system_fingerprint': None,
+    #         'finish_reason': 'stop',
+    #         'logprobs': None
+    #         },
+    #         'type': 'ai',
+    #         'name': None,
+    #         'id': 'run-597532ee-52a6-4dbc-91c0-a51941b926e8-0',
+    #         'example': False,
+    #         'tool_calls': [],
+    #         'invalid_tool_calls': []
+    #     },
+    #     'metadata': {
+    #         'run_id': '288323b4-79ec-4235-80bc-8f7187b1acaa',
+    #         'feedback_tokens': []
+    #     }
+    # }
+    
+    return res
+
+
+if __name__ == "__main__":
+    res1 = use_langserve()
+    print("langserve RemoteRunnable output\n", res1)
+    res2 = use_requests()
+    print("requests output\n", res2)
+```
 
 ### langchain-cli
+
+安装方式: `pip install langchain-cli`
 
 作为可执行脚本, `langchain-cli` 与 `langchain` 命令完全一样, [cli/pyproject.toml](https://github.com/langchain-ai/langchain/blob/master/libs/cli/pyproject.toml) 中有这种配置:
 
@@ -2262,6 +2442,8 @@ langchain serve ...  # 合并 langchain app serve 和 langchain template serve
 langchain integration new ...  # langchain 的开发人员工具, 在 libs/partners 目录下运行此命令, 以新增一个 partner 包, 例如 langchain-openai
 ```
 
+这里简要描述一下要点, 后续章节继续深入
+
 - `langchain template new` 的主要操作是复制 [package_template](https://github.com/langchain-ai/langchain/tree/master/libs/cli/langchain_cli/package_template), 并做一些 packagename 之类的替换, 注意这个 template 会随着 `pip install langchain-cli` 安装在本机的 `site-packages/langchain_cli` 目录下
 - `langchain app new` 类似, 复制 [project_template](https://github.com/langchain-ai/langchain/tree/master/libs/cli/langchain_cli/project_template), 并做一些替换, 这个 template 会随着 `pip install langchain-cli` 安装在本机的 `site-packages/langchain_cli` 目录下
 - `langchain app add` 的执行逻辑是先对 `app.firstpartyhq.com` 网址发请求告知需要拉取的模板, 但不一定需要成功, 猜测是 langchain 公司可以以此分析用户行为, 然后对 GitHub 发起请求拷贝 template (可以是 langchain 的官方 repo 或者是其他 repo). 具体拷贝的逻辑是:
@@ -2273,6 +2455,7 @@ langchain integration new ...  # langchain 的开发人员工具, 在 libs/partn
     ```
   - 然后再将上面的“缓存目录”拷贝至当前 `langchain app` 的 `packages` 目录下 (注意不拷贝 `.git` 目录, 也就是只拷贝工作目录)
 - `langchain app remove` 的执行逻辑就是简单地删除 `langchain app` 的 `packages` 目录下相应的目录
+- `langchain serve` / `langchain template serve` / `langchain app serve` 则本质上都是借助 `langserve` 提供的 `langserve.add_routes`
 
 TODO: langchain-cli 的实现里比较重度依赖 `typer` 这个包, 是对 `click` 的封装, 似乎有很多包的命令行工具依赖于 `click`, 有空时可以仔细研究下这个包
 
@@ -2339,7 +2522,7 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
 ```
 
-本质上 `langchain serve` 在这个情形下等价于以下任何一个
+本质上 `langchain serve` 在这个情形下基本等同于以下任意一条命令
 
 ```bash
 langchain app serve
@@ -2371,7 +2554,7 @@ uvicorn app.server:app --host 127.0.0.1 --port 8000
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-用例
+例子
 
 ```bash
 langchain app new my-app
@@ -2431,7 +2614,9 @@ langchain serve
         └── __init__.py
 ```
 
-### pip install -e
+### pip install -e .
+
+TODO: 本小节内容在另一篇关于 python import system 的博客中再更深入地介绍处理办法 (目前那边写的也不完善)
 
 为何需要使用 `pip install -e .` 将 `my-template` 进行安装? 原因是 `langchain serve` 的本质是执行类似这种 python 代码:
 
@@ -2479,13 +2664,20 @@ chain = getattr(module, 'chain')
 
 ## Contributing
 
-使用虚拟环境来安装 pipx 和 poerty
+直接参考[官方文档](https://python.langchain.com/v0.1/docs/contributing/)即可, 这里简要摘抄并做点解释
 
 ```bash
 conda create -n langchain python=3.10
-conda install pipx
-pipx install poetry
+conda install pipx   # 在当前虚拟环境安装
+pipx install poetry  # 全局可用
 pipx ensurepath
 poetry config virtualenvs.prefer-active-python true
-# ...
+
+# 假设要对 langchain-community 进行贡献
+cd libs/community
+poetry install --with lint,typing,test,test_integration
+
+make test         # pytest 测试
+make format_diff  # 格式化, 主要是 ruff, 不一定能完全自动化修复
+make lint_diff    # 静态检查, 主要是 mypy, 基本上需要手工修复发现的问题
 ```
