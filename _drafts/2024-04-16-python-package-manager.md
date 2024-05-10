@@ -1238,3 +1238,5 @@ pip install git+https://github.com/username/MyProject.git@da39a3ee5e6b4b0d3255bf
 pip install git+https://github.com/username/MyProject.git@refs/pull/123/head  # 通常是一个 PR, 其中 123 是 PR 的编号
 pip install git+https://github.com/username/MyProject.git@master#subdirectory=pkg_dir   # 分支名加子目录
 ```
+
+当 `pyproject.toml` 文件中设置了 `poetry-core` 作为 build-backend 时, 使用源码安装譬如说 `pip install -e .` 时, 如果加上 `-vvv` 选项, 可以观察到 pip 会先下载 `poetry-core`, 然后再进行包的安装. 注意无论当前环境是否有安装 `poetry-core`, pip 都会去安装 `poetry-core`, 这个 `poetry-core` 会是一个临时环境, 仅存在于内存(或者是临时目录, 有待确认).
