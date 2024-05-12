@@ -251,6 +251,35 @@ class_xx = get_class_in_module(class_name="ChatGLMTokenizer", module_path = "tra
 - `importlib.invalidate_caches()`
 - `importlib.import_module(...)`
 
+原理: 一个简化的例子
+
+```python
+name = "a"
+path = "pkg/a.py"  # 仅包含一行代码: x = 1
+from importlib.machinery import SourceFileLoader
+from importlib.util import spec_from_file_location, module_from_spec
+
+spec = spec_from_file_location(name, path)  # 根据 path 确定 loader 是 SourceFileLoader
+module = module_from_spec(spec)
+
+# spec.loader.exec_module(module)
+
+# method 1:
+# code_obj = spec.loader.get_code(module.__name__)
+
+# method 2:
+# src_byte = spec.loader.get_data(path)  # 以二进制读取 "pkg/a.py"
+# code_obj = spec.loader.source_to_code(src_byte, path)  # 转化为 Python 字节码
+
+# method 3: SourceFileLoader.exec_module 的实际的主要执行过程
+import _io
+with _io.FileIO(path, 'r') as file:
+    src_byte = file.read()
+code_obj = compile(src_byte, path, 'exec', dont_inherit=True, optimize=-1)  # 编译为 Python 字节码
+exec(code_obj, module.__dict__)  # 调用 exec, 将执行结果绑定到 module.__dict__ 里去
+print(module.x)
+```
+
 
 ### 案例: langchain template (重新写好写完善来)
 
