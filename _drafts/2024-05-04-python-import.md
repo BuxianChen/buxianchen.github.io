@@ -13,12 +13,93 @@ labels: [python,import]
 - [2] Python 官方文档, 对 import system 的描述: [https://docs.python.org/3/reference/import.html#importsystem](https://docs.python.org/3/reference/import.html#importsystem)
 - [3] Python 官方文档, 对内置模块 importlib 的描述: [https://docs.python.org/3/library/importlib.html](https://docs.python.org/3/library/importlib.html)
 - [4] Python 官方文档, 对内置函数 `__import__` 的描述: [https://docs.python.org/3/library/functions.html#import__]（https://docs.python.org/3/library/functions.html#import__
+- [5] Python 官方文档, 对 `typing.ModuleType` 的描述: [https://docs.python.org/3/library/types.html#types.ModuleType](https://docs.python.org/3/library/types.html#types.ModuleType)
 
 ## FAQ
 
 所谓的 module 实际上就是 `types.ModuleType` 类型的实例, 而 package 是指带有 `__path__` 属性的 module
 
-## import 语句与 `__import__`
+## import 语句
+
+参考[1](https://docs.python.org/3/reference/simple_stmts.html#import)
+
+
+### `types.ModuleType`
+
+```python
+import re
+import types
+re.__class__ is types.MuduleType  # True
+```
+
+参考[5](https://docs.python.org/3/library/types.html#types.ModuleType)
+
+```python
+types.ModuleType(name, doc=None)
+# ModuleType 有如下属性
+# __doc__: 入参 doc
+# __loader__: importlib.machinery.ModuleSpec.loader
+# __name__: importlib.machinery.ModuleSpec.name
+# __package__: importlib.machinery.ModuleSpec.parent
+# __spec__: importlib.machinery.ModuleSpec
+
+# 以下在文档中没有提及, 估计是可选的(需确认)
+# __file__
+# __path__
+```
+
+### loading
+
+参考[2](https://docs.python.org/3/reference/import.html#loading), 使用 module spec 来 load module 的过程大致如下:
+
+```python
+module = None
+if spec.loader is not None and hasattr(spec.loader, 'create_module'):
+    # It is assumed 'exec_module' will also be defined on the loader.
+    module = spec.loader.create_module(spec)
+if module is None:
+    module = ModuleType(spec.name)
+# The import-related module attributes get set here:
+_init_module_attrs(spec, module)  # 应该是设置 module.__loader__, ...
+
+if spec.loader is None:
+    # unsupported
+    raise ImportError
+if spec.origin is None and spec.submodule_search_locations is not None:
+    # namespace package
+    sys.modules[spec.name] = module
+elif not hasattr(spec.loader, 'exec_module'):
+    module = spec.loader.load_module(spec.name)
+else:
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        try:
+            del sys.modules[spec.name]
+        except KeyError:
+            pass
+        raise
+return sys.modules[spec.name]
+```
+
+## module
+
+module 包含如下属性:
+
+- `__spec__`:
+  - `name`: `__name__`, fully qualified name, 例如: `m.__spec__.name="pkg.subpkg"`
+  - `loader`: `__loader__`
+  - `origin`:
+  - `loader_state`:
+  - `submodule_search_locations`: list(str), 代表子模块搜索路径
+  - `_cached`: `__cached__`, str
+  - `parent`: `__package__`, 基本上也类似于 `__name__`
+- `__doc__`:
+- `__path__`: 只有 package 才有 `__path__` 属性, 否则只是普通的 module
+- `__file__`:
+
+## `__import__`
 
 import 语句是 `__import__` 函数的语法糖 ([3](https://docs.python.org/3/library/importlib.html#importlib.import_module)), import 语句的语法是以下几种 (精准定义[1](https://docs.python.org/3/reference/simple_stmts.html#import)):
 
