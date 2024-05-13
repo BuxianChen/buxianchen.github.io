@@ -19,7 +19,7 @@ labels: [python,import]
 
 所谓的 module 实际上就是 `types.ModuleType` 类型的实例, 而 package 是指带有 `__path__` 属性的 module
 
-## import 语句
+## (TODO) import 语句
 
 参考[1](https://docs.python.org/3/reference/simple_stmts.html#import)
 
@@ -83,7 +83,7 @@ else:
 return sys.modules[spec.name]
 ```
 
-## module
+## (TODO) module & package
 
 module 包含如下属性:
 
@@ -99,7 +99,7 @@ module 包含如下属性:
 - `__path__`: 只有 package 才有 `__path__` 属性, 否则只是普通的 module
 - `__file__`:
 
-## `__import__`
+## (TODO) `__import__`
 
 import 语句是 `__import__` 函数的语法糖 ([3](https://docs.python.org/3/library/importlib.html#importlib.import_module)), import 语句的语法是以下几种 (精准定义[1](https://docs.python.org/3/reference/simple_stmts.html#import)):
 
@@ -144,9 +144,13 @@ from ..a import x
 
 ## importlib
 
-先介绍一些简单的方法, 然后系统介绍. 官方文档[3](https://docs.python.org/3/library/importlib.html)中有一些例子介绍 importlib 的使用
+先介绍一些简单的方法, 然后系统介绍. 官方文档[3](https://docs.python.org/3/library/importlib.html)中有一些例子介绍 importlib 的使用, 从对外接口上, 主要是涉及下面的 API
 
-### `importlib.import_module`
+- `importlib.import_module`: 实现搜索目录下模块的导入, 内部会使用 `importlib.util.module_from_spec`
+- 结合 `import.util.spec_from_file_location` 和 `import.util.module_from_spec` 来进行任意位置的 python 模块导入
+- `importlib.reload`: 重新导入已导入的模块, 主要用于调试(估计 Jupyter 中的魔术指令 autoreload 应该就是基于此)
+
+### (Finish) `importlib.import_module`
 
 ```python
 importlib.import_module(name, package=None)  # 函数签名
@@ -167,6 +171,342 @@ from ..a import x
 # # __package__ == 'pkg.subpkg'
 # module_a = importlib.import_module('..a', package=__package__)
 # x = module_a.x
+```
+
+### (Finish) `importlib.import_module` 源码探索
+
+TO;DR: 跳到本节最后的总结
+
+Python 版本: 3.9.16
+
+```python
+# importlib/__init__.py
+def import_module(name, package=None):
+    level = 0
+    if name.startswith('.'):
+        if not package:
+            msg = "the 'package' argument is required to perform a relative import for {!r}"
+            raise TypeError(msg.format(name))
+        for character in name:
+            if character != '.':
+                break
+            level += 1
+    return _bootstrap._gcd_import(name[level:], package, level)
+```
+
+如果使用相对导入, 则必须设置 `package`, 例如: `name="..a.b.c", package="d.e"`, 那么导入的包是 `d.a.b.c`, 一个实际的例子:
+
+```python
+# langchain_community/agent_toolkits/json/prompt.py
+# langchain_community/docstore/base.py
+from importlib import import_module
+# module: <module 'langchain_community.docstore.base'
+module = import_module("..docstore.base", "langchain_community.agent_toolkits")
+```
+
+如果使用绝对导入, 则一般无需设置 `package`, 从上面可以看出, `import_module` 最终会由 `_gcd_import` 来完成:
+
+```python
+name, package = "..a.b.c", "d.e"
+level = 2
+_bootstrap._gcd_import("a.b.c", "d.e", 2)
+
+name, package = "a.b.c", None
+level = 0
+_bootstrap._gcd_import("a.b.c", None, 0)
+```
+
+接下来继续看看 `_bootstrap._gcd_import`
+
+```python
+# importlib/_bootstrap.py
+def _gcd_import(name, package=None, level=0):
+    _sanity_check(name, package, level)  # 仅仅是对入参做检查, 比较简单
+    if level > 0:
+        name = _resolve_name(name, package, level)
+    return _find_and_load(name, _gcd_import)
+```
+
+其中 `_resolve_name` 会将相对导入处理为绝对导入, 例如:
+
+```python
+name, package, level = "..a.b.c", "d.e", 2
+name = _resolve_name(name, package, level)  # name = "d.a.b.c"
+```
+
+接下来继续看 `_find_and_load(name, _gcd_import)`, 初看上去第二个参数有些奇怪
+
+```python
+_NEEDS_LOADING = object()
+
+def _find_and_load(name, import_):
+    with _ModuleLockManager(name):  # 加锁去锁操作, 从略
+        module = sys.modules.get(name, _NEEDS_LOADING)  # 先找缓存 sys.modules
+        if module is _NEEDS_LOADING:
+            return _find_and_load_unlocked(name, import_)
+
+    if module is None:
+        message = 'import of {} halted; None in sys.modules'.format(name)
+        raise ModuleNotFoundError(message, name=name)
+
+    _lock_unlock_module(name)  # 加锁去锁操作, 从略
+    return module
+
+# _find_and_load_unlocked:
+_ERR_MSG_PREFIX = 'No module named '
+_ERR_MSG = _ERR_MSG_PREFIX + '{!r}'
+
+def _find_and_load_unlocked(name, import_):
+    path = None
+    # name="a.b.c.d", name.rpartition('.') -> ['a.b.c', '.', 'd']
+    # name="a", name.rpartition('.') -> ['', '', 'a']
+    parent = name.rpartition('.')[0]
+    if parent:
+        if parent not in sys.modules:
+            # _call_with_frames_removed(import_, parent) 等价于 import_(parent),
+            # 假设 name = "a.b.c", 那么会产生递归, 最终结果会按: "a", "a.b", "a.b.c" 的顺序 import
+            _call_with_frames_removed(import_, parent)  
+        # 有可能 parent 在导入时 import 了子包, 使得 sys.modules 中已包含这个缓存
+        if name in sys.modules:
+            return sys.modules[name]
+        parent_module = sys.modules[parent]  # 这里 parent 必然在 sys.modules 的缓存中
+        try:
+            path = parent_module.__path__  # 由于 parent 有子模块 name, 所以 parent_module 必然是一个包
+        except AttributeError:
+            msg = (_ERR_MSG + '; {!r} is not a package').format(name, parent)
+            raise ModuleNotFoundError(msg, name=name) from None
+    spec = _find_spec(name, path)      # 重点!!
+    if spec is None:
+        raise ModuleNotFoundError(_ERR_MSG.format(name), name=name)
+    else:
+        module = _load_unlocked(spec)  # 重点!!
+    if parent:
+        # Set the module as an attribute on its parent.
+        parent_module = sys.modules[parent]
+        child = name.rpartition('.')[2]
+        try:
+            setattr(parent_module, child, module)  # 将子模块绑定到父模块的命令空间内(设置为属性)
+        except AttributeError:
+            msg = f"Cannot set an attribute on {parent!r} for child module {child!r}"
+            _warnings.warn(msg, ImportWarning)
+    return module
+```
+
+接下来, 我们继续简单看看 `_find_spec` 和 `_load_unlocked` 函数, 前者返回 `ModuleSpec`, 后者将利用这个 spec 执行导入模块的过程, 在此之前, 我们先看些基础:
+
+```python
+import sys
+print(sys.meta_path)
+# [
+#     <_distutils_hack.DistutilsMetaFinder at 0x7fd8a409f400>,
+#     _frozen_importlib.BuiltinImporter,
+#     _frozen_importlib.FrozenImporter,
+#     _frozen_importlib_external.PathFinder,
+#     <six._SixMetaPathImporter at 0x7fd8a2f275b0>,
+#     <pkg_resources.extern.VendorImporter at 0x7fd8a1a7e3d0>
+# ]
+for finder in sys.meta_path:
+    print(finder.find_spec)  # 每一项都有 find_spec 函数
+```
+
+这里简要说明下这几个抽象类:
+
+- `importlib.abc.Finder`:
+  - `find_module(self, fullname, path=None)`: 抽象方法
+- `MetaPathFinder(Finder)`:
+  - `find_module(self, fullname, path=None)`: deprecated, 具体方法, 内部调用 self.find_spec
+  - `invalidate_caches(self)`: 空方法 (即直接 pass)
+- `PathEntryFinder(Finder)`:
+  - `find_loader(self, fullname)`: deprecated, 具体方法, 内部调用 self.find_spec
+  - `find_module=_bootstrap_external._find_module_shim`: 具体方法
+  - `invalidate_caches(self)`: 空方法 (即直接 pass)
+
+
+下面先看 `_find_spec`
+
+```python
+def _find_spec_legacy(finder, name, path):
+    loader = finder.find_module(name, path)
+    if loader is None:
+        return None
+    return spec_from_loader(name, loader)
+
+def _find_spec(name, path, target=None):
+    meta_path = sys.meta_path   # sys.meta_path 里是一些 finder
+    if meta_path is None:
+        raise ImportError("sys.meta_path is None, Python is likely shutting down")
+
+    if not meta_path:
+        _warnings.warn('sys.meta_path is empty', ImportWarning)
+
+    # We check sys.modules here for the reload case.  While a passed-in target will usually indicate a reload there is no guarantee, whereas sys.modules provides one.
+    is_reload = name in sys.modules
+    for finder in meta_path:
+        with _ImportLockContext():  # 仅仅是加锁去锁操作
+            try:
+                find_spec = finder.find_spec
+            except AttributeError:
+                spec = _find_spec_legacy(finder, name, path)
+                if spec is None:
+                    continue
+            else:
+                spec = find_spec(name, path, target)  # 重点!! 不同的 finder 都会有各自的实现, spec 里会包含 loader 信息, 也就是确定 loader 用哪个
+        if spec is not None:
+            # The parent import may have already imported this module.
+            if not is_reload and name in sys.modules:
+                module = sys.modules[name]
+                try:
+                    __spec__ = module.__spec__
+                except AttributeError:
+                    # We use the found spec since that is the one that we would have used if the parent module hadn't beaten us to the punch.
+                    return spec
+                else:
+                    if __spec__ is None:
+                        return spec
+                    else:
+                        return __spec__
+            else:
+                return spec
+    else:
+        return None
+```
+
+然后看 `_load_unlocked(spec)`
+
+```python
+def _load_unlocked(spec):
+    # A helper for direct use by the import system.
+    if spec.loader is not None:
+        # Not a namespace package.
+        if not hasattr(spec.loader, 'exec_module'):
+            return _load_backward_compatible(spec)
+
+    module = module_from_spec(spec)  # !!重点!!
+
+    # This must be done before putting the module in sys.modules (otherwise an optimization shortcut in import.c becomes wrong).
+    spec._initializing = True
+    try:
+        sys.modules[spec.name] = module
+        try:
+            if spec.loader is None:
+                if spec.submodule_search_locations is None:
+                    raise ImportError('missing loader', name=spec.name)
+                # A namespace package so do nothing.
+            else:
+                spec.loader.exec_module(module)  # !!重点!!
+        except:
+            try:
+                del sys.modules[spec.name]
+            except KeyError:
+                pass
+            raise
+        # Move the module to the end of sys.modules. We don't ensure that the import-related module attributes get set in the sys.modules replacement case.  Such modules are on their own.
+        module = sys.modules.pop(spec.name)
+        sys.modules[spec.name] = module
+        _verbose_message('import {!r} # {!r}', spec.name, spec.loader)
+    finally:
+        spec._initializing = False
+
+    return module
+```
+
+综上, 简单来说, `import_module` 的逻辑是:
+
+- 先查找缓存 `sys.modules`
+- 依次导入父模块 `parent_module`, 父模块的导入是递归的
+- 再查找依次缓存 `sys.module`
+- 按 `sys.meta_path` 里的每个 finder 逐个尝试 `find_spec`, 直至其中一个返回 ModelSpec
+- 获取 ModuleSpec: `module = module_from_spec(spec)`
+- 将 module 存入 `sys.modules` 缓存: `sys.modules[spec.name] = module`
+- 运行 module: `spec.loader.exec_module(module)`, 包含读取 py 文件内容, 编译为 Python 字节码并执行
+- 将子模块绑定至父模块下: `setattr(parent_module, child_name, module)`
+
+
+### (Finish) `importlib.util.module_from_spec`
+
+一般来说, 一个 importer 大致需要经历这几步:
+
+```python
+spec = finder.find_spec(...)  # spec 中已包含 loader
+module = module_from_spec(spec)
+sys.modules[name] = module
+spec.loader.exec_module(module)
+```
+
+注意 `finder.find_spec` 和 `spec.loader.exec_module` 才是最重要的过程, `module_from_spec` 是用 ModuleSpec 构造 ModuleType 的过程, 此过程比较直白, 没有复杂的逻辑
+
+`importlib.util.module_from_spec` 源码 (Python 3.9.16):
+
+```python
+def module_from_spec(spec):
+    """Create a module based on the provided spec."""
+    # Typically loaders will not implement create_module().
+    module = None
+    if hasattr(spec.loader, 'create_module'):
+        # If create_module() returns `None` then it means default module creation should be used.
+        module = spec.loader.create_module(spec)  # 默认的 create_module 实现会返回 None, 因此可能会继续向下执行 _new_module
+    elif hasattr(spec.loader, 'exec_module'):
+        raise ImportError('loaders that define exec_module() must also define create_module()')
+    if module is None:
+        module = _new_module(spec.name)  # 也就是: module = typs.ModuleType(spec.name)
+    _init_module_attrs(spec, module)  # 主要就是同步 spec.parent 与 __package__ 之类的字段
+    return module
+
+def _init_module_attrs(spec, module, *, override=False):
+    if (override or getattr(module, '__name__', None) is None):
+        try:
+            module.__name__ = spec.name
+        except AttributeError:
+            pass
+    # __loader__
+    if override or getattr(module, '__loader__', None) is None:
+        loader = spec.loader
+        if loader is None:
+            if spec.submodule_search_locations is not None:
+                if _bootstrap_external is None:
+                    raise NotImplementedError
+                _NamespaceLoader = _bootstrap_external._NamespaceLoader
+                loader = _NamespaceLoader.__new__(_NamespaceLoader)
+                loader._path = spec.submodule_search_locations
+                spec.loader = loader
+                module.__file__ = None
+        try:
+            module.__loader__ = loader
+        except AttributeError:
+            pass
+    # __package__
+    if override or getattr(module, '__package__', None) is None:
+        try:
+            module.__package__ = spec.parent
+        except AttributeError:
+            pass
+    # __spec__
+    try:
+        module.__spec__ = spec
+    except AttributeError:
+        pass
+    # __path__
+    if override or getattr(module, '__path__', None) is None:
+        if spec.submodule_search_locations is not None:
+            try:
+                module.__path__ = spec.submodule_search_locations
+            except AttributeError:
+                pass
+    # __file__/__cached__
+    if spec.has_location:
+        if override or getattr(module, '__file__', None) is None:
+            try:
+                module.__file__ = spec.origin
+            except AttributeError:
+                pass
+
+        if override or getattr(module, '__cached__', None) is None:
+            if spec.cached is not None:
+                try:
+                    module.__cached__ = spec.cached
+                except AttributeError:
+                    pass
+    return module
 ```
 
 ### `importlib.reload`
