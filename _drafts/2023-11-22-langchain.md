@@ -1437,6 +1437,53 @@ RunnableLambda(func2).invoke({"num": 1}, config={"configurable": {"total": 100},
 
 备注: `RunnableLambda` 没有继承自 `RunnableSerializable` 因此没有 `configurable_fields`, `configurable_alternatives` 方法, 并且 `with_config` 方法也不能设置 `configurable`
 
+#### RunnableParallel
+
+在调用 `RunnableParallel` 的 `invoke` 方法时会自动触发并行, 实现原理大致如下(langchain 的原始实现也是用的线程池)
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Any, Dict
+import time
+
+class ParallelTasks:
+    def __init__(self, tasks: Dict[str, Callable[[Any], Any]]):
+        self.tasks = tasks
+
+    def invoke(self, input):
+        with ThreadPoolExecutor(3) as executor:
+            futures = [
+                executor.submit(
+                    callable,
+                    input
+                )
+                for key, callable in self.tasks.items()
+            ]
+            output = {key: future.result() for key, future in zip(self.tasks, futures)}
+        return output
+
+def task_a_fn(x: Dict[str, int]):
+    time.sleep(1)
+    return x["a"] + x["b"]
+
+def task_b_fn(x: Dict[str, int]):
+    time.sleep(1)
+    return x["a"] - x["b"]
+
+tasks = ParallelTasks(
+    {
+        "task_a": task_a_fn,
+        "task_b": task_b_fn,
+    }
+)
+
+start_time = time.time()
+output = tasks.invoke({"a": 1, "b": 2})
+end_time = time.time()
+print(end_time - start_time)  # 1.0025877952575684
+print(output)  # {'task_a': 3, 'task_b': -1}
+```
+
 ### Memory (For Legacy Chain)
 
 以这个例子为例: [https://python.langchain.com/docs/modules/memory/types/buffer_window](https://python.langchain.com/docs/modules/memory/types/buffer_window)
