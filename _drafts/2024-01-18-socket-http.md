@@ -135,7 +135,7 @@ requests 封装了客户端 socket 的代码, `requests.get`, `requests.post` �
 
 ```python
 import requests
-requests.request(
+resp = requests.request(
     method="GET",
     url="http://localhost:8000/a/b",
     params={"q": "1", "r": 23},    # 像这样传字典且不加 {"Content-Type": "application/json"} 的 header, 就会被处理成表单
@@ -168,8 +168,11 @@ requests.request(
     ```python
     # requests/sessions.py:Session
     # r: requests.models.Response
-    if not stream:
-        r.content
+    if not stream:  # stream 参数来源于 requests.post(..., stream=stream)
+        r.content   # 如果 stream=False, 即使服务端按流式返回, 客户端也会等所有数据发送完毕, 再返回给 requests.request 的调用者
+    # 如果 stream=True, 则直接返回, 但是否为真流式则需要由服务端和请求参数确定
+    # 在真流式的情形下, 客户端以怎样的方式流式读取数据, 则是由服务器和客户端之间的约定来决定的
+    # 一种常见的约定形式是, 客户端使用 for line in resp.iter_lines() 的方式来流式获取数据
     return r
     ```
 
@@ -472,7 +475,7 @@ url = "	https://api.openai.com/v1/chat/completions"
 headers = {
     'Authorization': 'Bearer sk-xxx',
     'Content-Type': 'application/json',
-    # 'Accept': 'text/event-stream',
+    # 'Accept': 'text/event-stream',  # 无需设置
   }
 
 # 无需额外再设置 stream=True !!!

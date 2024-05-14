@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(P1) SuperGLUE 数据集介绍"
+title: "(DEAD) SuperGLUE 数据集介绍"
 date: 2023-07-29 10:00:04 +0800
 labels: [dataset]
 ---
