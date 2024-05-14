@@ -544,8 +544,10 @@ def print_hello():
     print("hello world")
 
 # 疑问: 此处打印 globals(), 发现并没有 multiprocessing.__init__ 对 globals() 添加的属性
+# (2024/05/14 update) 见下面的解释
 if __name__ == "__main__":
     # 疑问: 此处打印 globals(), 发现并没有 multiprocessing.__init__ 对 globals() 添加的属性
+    # (2024/05/14 update) 见下面的解释
     p = multiprocessing.Process(target=print_hello)
     p.start()
     p.join()
@@ -560,6 +562,7 @@ from . import context
 
 __all__ = [x for x in dir(context._default_context) if not x.startswith('_')]
 # 注意此处加了些全局变量, 但似乎在入口脚本中没有体现
+# (2024/05/14 update) globals() 实际上仅限于当前脚本
 globals().update((name, getattr(context._default_context, name)) for name in __all__)
 
 SUBDEBUG = 5
