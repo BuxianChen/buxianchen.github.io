@@ -1486,6 +1486,22 @@ print(output)  # {'task_a': 3, 'task_b': -1}
 
 ### Memory (For Legacy Chain)
 
+TL;DR(TODO, 这里写的混乱, 需要重新写过): 所谓 Memory For Legacy Chain, 实际上是 `langchain_core.memory.BaseMemory` 的子类, 而其最主要的方法是, `load_memory_variables` 和 `save_context`:
+
+```python
+class BaseMemory(Serializable, ABC):
+    @abstractmethod
+    def load_memory_variables(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Return key-value pairs given the text input to the chain."""
+
+    @abstractmethod
+    def save_context(self, inputs: Dict[str, Any], outputs: Dict[str, str]) -> None:
+        """Save the context of this chain run to memory."""
+```
+
+它一般是作为一个 runnable 的属性, 因此 runnable 的 invoke 方法需要在期望的时刻调用 `load_memory_variables` 和 `save_context`, 然而这种用法的关键是需要将 memory 设置为 runnable 的属性
+
+
 以这个例子为例: [https://python.langchain.com/docs/modules/memory/types/buffer_window](https://python.langchain.com/docs/modules/memory/types/buffer_window)
 
 ```python
@@ -1536,6 +1552,242 @@ def _call(inputs):
 ```
 
 从上面可以看出, 只需要关注 `load_memory_variables` 和 `save_context` 方法即可 (因为调用来自于 `Chain` 这个父类)
+
+### Memory (For LCEL, TODO: 本节非常混乱, 后期整理)
+
+例子参考前面的例子 7, 核心是 `langchain_core.runnable.history.RunnableWithMessageHistory` (一个在 `langchain_core` 中定义的 Runnable 的子类) 搭配 `BaseChatMessageHistory` (例子中是它的子类 `RedisChatMessageHistory`)
+
+```python
+class BaseChatMessageHistory(ABC):
+    messages: List[BaseMessage]   # 子类继承时也可以做成 @property
+    def add_message(self, message: BaseMessage) -> None: ...
+    def add_messages(self, messages: Sequence[BaseMessage]) -> None: ...
+```
+
+再看看 `RunnableWithMessageHistory`
+
+```python
+GetSessionHistoryCallable = Callable[..., BaseChatMessageHistory]
+
+class RunnableWithMessageHistory(RunnableBindingBase):
+    def __init__(
+        self,
+        runnable: Union[
+            Runnable[
+                Union[MessagesOrDictWithMessages],
+                Union[str, BaseMessage, MessagesOrDictWithMessages],
+            ],
+            LanguageModelLike,
+        ],
+        get_session_history: GetSessionHistoryCallable,
+        *,
+        input_messages_key: Optional[str] = None,
+        output_messages_key: Optional[str] = None,
+        history_messages_key: Optional[str] = None,
+        history_factory_config: Optional[Sequence[ConfigurableFieldSpec]] = None,
+        **kwargs: Any,
+    ) -> None:
+        history_chain: Runnable = RunnableLambda(self._enter_history, self._aenter_history).with_config(run_name="load_history")
+        messages_key = history_messages_key or input_messages_key
+        if messages_key:
+            history_chain = RunnablePassthrough.assign(**{messages_key: history_chain}).with_config(run_name="insert_history")
+        bound = (history_chain | runnable.with_listeners(on_end=self._exit_history)).with_config(run_name="RunnableWithMessageHistory")
+
+        if history_factory_config:
+            _config_specs = history_factory_config
+        else:
+            # If not provided, then we'll use the default session_id field
+            _config_specs = [
+                ConfigurableFieldSpec(
+                    id="session_id",
+                    annotation=str,
+                    name="Session ID",
+                    description="Unique identifier for a session.",
+                    default="",
+                    is_shared=True,
+                ),
+            ]
+
+        super().__init__(
+            get_session_history=get_session_history,
+            input_messages_key=input_messages_key,
+            output_messages_key=output_messages_key,
+            bound=bound,
+            history_messages_key=history_messages_key,
+            history_factory_config=_config_specs,
+            **kwargs,
+        )
+```
+
+可以看出来, 实际上是在内部构造了 LCEL Chain, 以及增加了 `ConfigurableFieldSpec`
+
+下面接着关注 `invoke` 方法, 先看下其父类 `RunnableBindingBase`
+
+```python
+class RunnableBindingBase(RunnableSerializable[Input, Output]):
+    # 注意这个 _merge_configs 在后面起了关键作用
+    def _merge_configs(self, *configs: Optional[RunnableConfig]) -> RunnableConfig:
+        # 这个 merge_configs 也有一段逻辑, 对 metadata, tags, configurable, callbacks 做合并, 其中 callbacks 的合并逻辑稍显复杂
+        config = merge_configs(self.config, *configs)
+        # 一般是 runnable.with_listener 时才会加上 config_factories 参数
+        return merge_configs(config, *(f(config) for f in self.config_factories))
+
+    def invoke(
+        self,
+        input: Input,
+        config: Optional[RunnableConfig] = None,
+        **kwargs: Optional[Any],
+    ) -> Output:
+        return self.bound.invoke(
+            input,
+            self._merge_configs(config),
+            **{**self.kwargs, **kwargs},
+        )
+
+class Runnable(Generic[Input, Output], ABC):
+    # 注意 RunnableBinding (重载 with_listener) -> RunnableBindingBase -> Runnable
+    def with_listeners(
+        self,
+        *,
+        on_start: Optional[Listener] = None,
+        on_end: Optional[Listener] = None,
+        on_error: Optional[Listener] = None,
+    ) -> Runnable[Input, Output]:
+        from langchain_core.tracers.root_listeners import RootListenersTracer
+        # RootListenersTracer 属于 callback, 在各处的触发方式为:
+        # >>> callback_manager = CallbackManager.configure(callbacks, ...)
+        # >>> callback_manager.on_*_start(...)
+        # >>> runnable.invoke(...)
+        # >>> callback_manager.on_*_end(...)
+
+        return RunnableBinding(
+            bound=self,
+            config_factories=[
+                lambda config: {
+                    "callbacks": [
+                        RootListenersTracer(
+                            config=config,
+                            on_start=on_start,
+                            on_end=on_end,
+                            on_error=on_error,
+                        )
+                    ],
+                }
+            ],
+        )
+```
+
+下面继续观察前置的 `history_chain`
+
+```python
+class RunnableWithMessageHistory(RunnableBindingBase):
+    # 在 RunnableWithMessageHistory.invoke 被触发时, 也就是
+    # (history_chain | runnable.with_listeners(on_end=self._exit_history)).invoke(..., config=xxx)
+    # 被触发 invoke 前, 先会触发 _merge_configs
+    def _merge_configs(self, *configs: Optional[RunnableConfig]) -> RunnableConfig:
+        config = super()._merge_configs(*configs)
+        expected_keys = [field_spec.id for field_spec in self.history_factory_config]
+
+        configurable = config.get("configurable", {})
+
+        missing_keys = set(expected_keys) - set(configurable.keys())
+
+        if missing_keys:
+            example_input = {self.input_messages_key: "foo"}
+            example_configurable = {
+                missing_key: "[your-value-here]" for missing_key in missing_keys
+            }
+            example_config = {"configurable": example_configurable}
+            raise ValueError(
+                f"Missing keys {sorted(missing_keys)} in config['configurable'] "
+                f"Expected keys are {sorted(expected_keys)}."
+                f"When using via .invoke() or .stream(), pass in a config; "
+                f"e.g., chain.invoke({example_input}, {example_config})"
+            )
+
+        parameter_names = _get_parameter_names(self.get_session_history)
+
+        if len(expected_keys) == 1:
+            # If arity = 1, then invoke function by positional arguments
+            message_history = self.get_session_history(configurable[expected_keys[0]])
+        else:
+            # otherwise verify that names of keys patch and invoke by named arguments
+            if set(expected_keys) != set(parameter_names):
+                raise ValueError(
+                    f"Expected keys {sorted(expected_keys)} do not match parameter "
+                    f"names {sorted(parameter_names)} of get_session_history."
+                )
+
+            message_history = self.get_session_history(
+                **{key: configurable[key] for key in expected_keys}
+            )
+        config["configurable"]["message_history"] = message_history
+        return config
+    
+    # 注意这个是包装原始 runnable 的前置 runnable
+    # history_chain: Runnable = RunnableLambda(self._enter_history, self._aenter_history).with_config(run_name="load_history")
+    # 条件触发: history_chain = RunnablePassthrough(history_chain)
+    # (history_chain | runnable.with_listeners(on_end=self._exit_history)).invoke(..., config=xxx)
+    def _enter_history(self, input: Any, config: RunnableConfig) -> List[BaseMessage]:
+        hist: BaseChatMessageHistory = config["configurable"]["message_history"]  # 这个 "message_history" 来源于 self._merge_configs
+        messages = hist.messages.copy()  # !!!!!! BaseChatMessageHistory.messages 用于此处
+
+        if not self.history_messages_key:  # 注意在例 7 中, 不会进入这个分支
+            # return all messages
+            messages += self._get_input_messages(input)
+        return messages
+    
+    def _get_input_messages(
+        self, input_val: Union[str, BaseMessage, Sequence[BaseMessage], dict]
+    ) -> List[BaseMessage]:
+        from langchain_core.messages import BaseMessage
+
+        if isinstance(input_val, dict):
+            if self.input_messages_key:
+                key = self.input_messages_key
+            elif len(input_val) == 1:
+                key = list(input_val.keys())[0]
+            else:
+                key = "input"
+            input_val = input_val[key]
+
+        if isinstance(input_val, str):
+            from langchain_core.messages import HumanMessage
+
+            return [HumanMessage(content=input_val)]
+        elif isinstance(input_val, BaseMessage):
+            return [input_val]
+        elif isinstance(input_val, (list, tuple)):
+            return list(input_val)
+        else:
+            raise ValueError(
+                f"Expected str, BaseMessage, List[BaseMessage], or Tuple[BaseMessage]. "
+                f"Got {input_val}."
+            )
+```
+
+再观察 `runnable.with_listeners(on_end=self._exit_history)`
+
+```python
+class RunnableWithMessageHistory(RunnableBindingBase):
+    def _exit_history(self, run: Run, config: RunnableConfig) -> None:
+        hist: BaseChatMessageHistory = config["configurable"]["message_history"]
+
+        # Get the input messages
+        inputs = load(run.inputs)
+        input_messages = self._get_input_messages(inputs)   # 前面已看过这部分代码
+
+        # If historic messages were prepended to the input messages, remove them to
+        # avoid adding duplicate messages to history.
+        if not self.history_messages_key:
+            historic_messages = config["configurable"]["message_history"].messages
+            input_messages = input_messages[len(historic_messages) :]
+
+        # Get the output messages
+        output_val = load(run.outputs)
+        output_messages = self._get_output_messages(output_val)  # 与前面的 self._get_input_messages 类似
+        hist.add_messages(input_messages + output_messages)  # !!!!!! BaseChatMessageHistory.add_messages 用于此处
+```
 
 ### Agent, AgentExecutor, RunnableAgent, RunnableMultiActionAgent
 
