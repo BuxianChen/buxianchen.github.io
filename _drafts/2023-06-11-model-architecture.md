@@ -1,33 +1,88 @@
 ---
 layout: post
-title: "(P1) NLP Model Architecture Examples"
+title: "(P1) Transformers Building Blocks"
 date: 2023-06-11 17:20:04 +0800
 labels: [transformers]
 ---
 
 ## 动机、参考资料、涉及内容
 
-动机
+动机: 梳理 Transformers 的一些关键组件, 例如 layernorm, 位置编码, attention 等. 并以此作为基础从模型结构上看看各类开源模型的模型结构
 
-- 梳理目前较为经典的 NLP 模型的结构 (在原始 Transformers 结构上的微小改动的部分), 也为了方便模型结构/规模对推理性能的影响
+参考资料: 主要参考 huggingface transformers 的实现
 
-参考资料
+## Building Blocks
 
-- 🤗 Transformer 的实现
+### Scaled Dot Product Attention
 
-涉及内容
+Attention 机制是为了解决一个这样的问题, 假设现在有很多信息来源, 从人的思维来说, 总是会关注重点, 当然也考虑次要信息, 最终汇总出一个结果. 在 NLP 的场景下, 这里的很多信息来源指的就是现在每个 token 我都有了一个隐层表示, 也就是说 $L$ 个 $D$ 维向量, 而汇总起来的意思就是把这些总结为 1 个 $C$ 维的向量. 那么做到这的自然的想法是什么呢? 最自然的一个想法是平均起来然后再做个线性变换 (其实也等价于先做线性变换再平均):
 
-- 模型结构
-- 具体的超参数, 例如层数, 特征向量维数等
-- 各个模型间的“渊源”梳理
+$$
+\mathbf{y}=\frac{1}{L}A\sum_{i}^{L}{\mathbf{x}_l}
+$$
 
-不涉及内容
+其中 $\mathbf{y}\in\mathbb{R}^{C}$, 而 $A\in\mathbb{R}^{C\times D}$. 接下来我们很自然地会想到, 平均可能是不合理的, 因此我们很自然地希望将其更改为
 
-- 训练数据量, tokenizer, 训练方法 (这一部分在另一篇博客 llm-survey 中做介绍), 因此可以认为本博客只是介绍随机初始化的模型长什么样.
+$$
+\mathbf{y}=A\sum_{i}^{L}{\alpha_l\mathbf{x}_l}
+$$
 
-## 渊源
+其中 $\alpha_l$ 是一个标量, 且 $\sum_{i=1}^{L}\alpha_l=1$, 现在有个问题是这些 $\alpha_l$ 怎么确定呢? 回到人的思维角度, 我们通常会带着一个问题来汇总相关的信息, 也就是说会用一个 $\mathbf{q}\in\mathbb{R}^E$ 来审视 $\mathbf{x}_1,\ldots\mathbf{x}_L$, 判断这些信息是否与 $\mathbf{q}$ 相关. 最直接的做法当然是假设 $E=D$, 用内积来衡量相关性, 即:
 
-## Blocks
+$$
+\alpha_l=\langle\mathbf{q},\mathbf{x}_l\rangle
+$$
+
+当然, 这里的小细节是我们无法保证 $\sum_{l=1}^{L}{\alpha_l}=1$, 这实际上可以再对 $\alpha_l$ 做一次 softmax 即可完成.
+
+然后我们看一下 Scaled Dot Product Attention 的定义: 假设有 3 个矩阵 $Q,K,V\in\mathbb{R}^{L\times D}$, 采用注意力机制后得到的表示 $Y\in\mathbb{R}^{L\times D}$ 为:
+
+$$
+Y=\frac{1}{\sqrt{D}}\text{softmax}(QK^T)V
+$$
+
+其中 $\text{softmax}$ 是对矩阵的每一行做归一化处理, 我们先忽略掉缩放因子 $\frac{1}{\sqrt{D}}$, 注意到这里似乎与之前的讨论稍有不同: 之前我们是希望用 $L$ 个向量汇总成一个向量, 而这里却仍旧是 $L$ 个向量. 这个区别应当这样理解, 对于每个特定的 $1 \le l \le L$ 来说, 我们希望汇总所有的 $L$ 个向量, 得到一个新的汇总表示, 也就是 $Y$ 的第 $l$ 行, 而如果我们只关注 $Y$ 的第 $l$ 行, 我们会发现, 上面的式子实际上是:
+
+$$
+\alpha'_i = \langle\mathbf{q}_l, \mathbf{k}_i\rangle\\
+\alpha_i=[\text{softmax}(\alpha'_1,\ldots,\alpha'_L)]_i\\
+\mathbf{y}_l=\frac{1}{\sqrt{D}}\sum_{i=1}^{L}{\alpha_i\mathbf{v}_i}
+$$
+
+而 transformers 中的所谓 self-attention, 其实就只是在此基础上增加一条: $Q,K,V$ 全部来自于上一层的表示 $X\in\mathbb{R}^{L\times D}$, 其实也就是 $Q,K,V$ 是通过 $X$ 线性变换得到的.
+
+最后 transformers 中 attention 的“最终形态” multi-head self-attention, 实际上则更加简单粗暴: 在通过线性变换得到 $Q,K,V$ 后, 本来各自都是 $L\times D$ 的形状, 现在直接将其切分为 $\text{heads}$ 段, 然后每一段各自做 Scaled Dot Product Attention, 这样每一段输出的 $Y$ 也都只有 $D/\text{heads}$ 的长度, 而最终的 $Y$ 就将他们直接拼起来即可. 因此, Scaled Dot Product Attention 用代码实现如下
+
+```python
+# https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None) -> torch.Tensor:
+    # 备注, 一般地形状如下, 但在 transformer 中, L=S 为序列长度, c=d, num_heads*d 为隐层的维度
+    # query: (B, num_heads, L, c)
+    # key:   (B, num_heads, S, c)
+    # value: (B, num_heads, S, d)
+    # output:(B, num_heads, L, d)
+    L, S = query.size(-2), key.size(-2)
+    scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
+    # ==========================
+    attn_bias = torch.zeros(L, S, dtype=query.dtype)
+    if is_causal:
+        assert attn_mask is None
+        temp_mask = torch.ones(L, S, dtype=torch.bool).tril(diagonal=0)
+        attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
+        attn_bias.to(query.dtype)
+
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+        else:
+            attn_bias += attn_mask
+    # ===========================
+    attn_weight = query @ key.transpose(-2, -1) * scale_factor
+    attn_weight += attn_bias
+    attn_weight = torch.softmax(attn_weight, dim=-1)
+    attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
+    return attn_weight @ value
+```
 
 ### RoPE 位置编码
 
@@ -124,7 +179,9 @@ y = y.transpose(1, 2).reshape(B, L, D)
 从原始论文的实验结果看, 相比于原始的 attention 机制, 使用 Multi-Query Attention 可能会对推理速度提升 5-10 倍, 但训练速度提升几乎可以忽略不计.
 
 
-## GPT-2
+## Models
+
+### GPT-2
 
 ```yaml
 
@@ -202,8 +259,6 @@ class GPT2Model:
 
 ## LLAMA
 
-## Open-LLAMA
-
 ## RWKV
 
 ## GLM
@@ -213,7 +268,7 @@ class GPT2Model:
 - 位置编码: RoPE
 - 注意力: 采用 Multi-Query Attention, 实现上还利用了 flashattention-v1
 
-## MOSS
+## MOSS (TO REMOVE)
 
 基本上完全就是 GPTJ 的结构?
 
