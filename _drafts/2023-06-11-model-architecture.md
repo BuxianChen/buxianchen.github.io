@@ -84,7 +84,89 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.
     return attn_weight @ value
 ```
 
-### RoPE 位置编码
+### RoPE 位置编码 (TODO)
+
+- 公式参考 [作者原文公式](https://spaces.ac.cn/archives/8265)
+- 实现参考: [huggingface](https://github.com/huggingface/transformers/blob/main/src/transformers/models/roformer/modeling_roformer.py)
+
+#### 推导
+
+笔者按照自己的思路讲述 RoPE 编码的来由, 我们考虑 self-attention 的情形, 假设对于原始序列送入 Embedding 层后, 不加上位置编码, 我们应该怎样把位置信息考虑进去?
+
+```python
+# 假设词表长度为 4, 词嵌入的维度为 2
+embedding_map = [[0.1, 0.2], [0.1, 0.3], [-0.1, 0.2], [-0.1, 0.1]]
+input_ids = [0, 1, 0, 2, 0, 1]
+embeddings = [[0.1, 0.2], [0.1, 0.3], [0.1, 0.2], [-0.1, 0.2], [0.1, 0.2], [0.1, 0.3]]
+
+Q = embeddings @ q_trans
+K = embeddings @ k_trans
+V = embeddings @ v_trans
+
+# 如果使用标准的 Y = softmax(Q@K.T)V, 那么在这个例子中, Y[0] == Y[2] == Y[4], Y[1]==Y[5]
+```
+
+我们考虑按这种方式加位置编码, 假设我们通过一个函数 $f(\mathbf{x}, m)\in\mathbb{R}^2$ 来增加位置编码, 其中 $\mathbf{x}\in\mathbb{R}^2$, 而 $m\geq 0$ 且为整数. 我们希望对前面的 $Q$ 和 $K$ 使用这一变换, 满足:
+
+$$
+\langle f(\mathbf{q}, m), f(\mathbf{k}, n)\rangle = g(\mathbf{q}, \mathbf{k}, m-n)
+$$
+
+首先, 我们为什么希望有一个这样的式子成立呢? 这个式子表明的含义是内积计算结果只与 $\mathbf{q}, \mathbf{k}$ 以及 $m-n$ (相对位置) 相关.
+
+这里我们先看最终的答案:
+
+$$
+f(\mathbf{q}, m)=\begin{bmatrix}
+\cos(m\theta)&-\sin(m\theta)\\
+\sin(m\theta)&\cos(m\theta)\\
+\end{bmatrix}
+\begin{bmatrix}
+q_1\\
+q_2
+\end{bmatrix}
+$$
+
+那么
+
+$$
+\langle f(\mathbf{q}, m), f(\mathbf{k}, n)\rangle=\mathbf{q}^T\begin{bmatrix}
+\cos(m\theta)&-\sin(m\theta)\\
+\sin(m\theta)&\cos(m\theta)\\
+\end{bmatrix}^T
+\begin{bmatrix}
+\cos(n\theta)&-\sin(n\theta)\\
+\sin(n\theta)&\cos(n\theta)\\
+\end{bmatrix}\mathbf{k}^T=\mathbf{q}^T\begin{bmatrix}
+\cos((m-n)\theta)&\sin((m-n)\theta)\\
+-\sin((m-n)\theta)&\cos((m-n)\theta)\\
+\end{bmatrix}\mathbf{k}^T
+$$
+
+上述计算利用到了三角公式
+
+$$
+\sin(\alpha+\beta)=\sin\alpha\cos\beta+\cos\alpha\sin\beta \\
+\sin(\alpha-\beta)=\sin\alpha\cos\beta-\cos\alpha\sin\beta \\
+\cos(\alpha+\beta)=\cos\alpha\cos\beta-\sin\alpha\sin\beta \\
+\cos(\alpha-\beta)=\cos\alpha\cos\beta+\sin\alpha\sin\beta
+$$
+
+我们很容易将其推广至高维: [https://spaces.ac.cn/archives/8265](https://spaces.ac.cn/archives/8265) 的第 11 个式子
+
+推导过程 (TODO):
+
+```python
+q = (q1, q2)
+k = (k1, k2)
+
+<q, k> = (q1*k1+q2*k2)
+
+# 将 q 和 k 看作复数, 那么 q 与 k 内积的实部与它们作为二维向量的内积相同
+(q1 + q2 * i) * (k1 - k2 * i) = <q, k> + (- q1 * k2 + q2 * k1) * i
+```
+
+#### 实现
 
 Rotary Position Embedding 位置编码被广泛用于后续的模型结构里:
 
@@ -97,8 +179,6 @@ $$
 \end{bmatrix}
 $$
 
-- 公式参考 [作者原文公式](https://spaces.ac.cn/archives/8265)
-- 实现参考: [huggingface](https://github.com/huggingface/transformers/blob/main/src/transformers/models/roformer/modeling_roformer.py)
 
 ```python
 # 使用逻辑: 每一次 attention 之前都先对 query, key, value 做旋转处理 (value 未必需要)
