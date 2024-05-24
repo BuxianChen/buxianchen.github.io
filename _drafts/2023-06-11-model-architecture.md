@@ -112,7 +112,7 @@ $$
 \langle f(\mathbf{q}, m), f(\mathbf{k}, n)\rangle = g(\mathbf{q}, \mathbf{k}, m-n)
 $$
 
-首先, 我们为什么希望有一个这样的式子成立呢? 这个式子表明的含义是内积计算结果只与 $\mathbf{q}, \mathbf{k}$ 以及 $m-n$ (相对位置) 相关.
+首先, 我们为什么希望有一个这样的式子成立呢? 这个式子表明的含义是内积计算结果只与 $\mathbf{q}, \mathbf{k}$ 以及 $m-n$ (相对位置的距离) 相关 (重点在于固定 $\mathbf{q}$ 和 $\mathbf{k}$ 时, 仅与相对距离相关, 而不是关于 $m$ 以及 $n$ 更为复杂的关系).
 
 这里我们先看最终的答案:
 
@@ -168,39 +168,125 @@ k = (k1, k2)
 
 #### 实现
 
-Rotary Position Embedding 位置编码被广泛用于后续的模型结构里:
+从上面可知, 假设 $\mathbf{q}$ 与 $\mathbf{k}$ 都是 $d$ 维向量, 我们可以在对角线上使用 $d/2$ 个不同的 $\theta$ 值, RoFormer 作者采用了
 
 $$
-\text{position\_enc} = \begin{bmatrix}
+\theta_i=10000^{-\frac{2i}{d}}, \quad i=1,\ldots,\frac{d}{2}
+$$
+
+由于变换 $f$ 在扩展到 $d$ 维之后变换矩阵只有对角线上有值(将变换矩阵视为 2x2 的分块矩阵, 则只有对角线上的块有值). 因此 $f$ 可以有更简单的形式, 首先回到 2 维情形:
+
+$$
+f(\mathbf{q}, m)=\begin{bmatrix}
+\cos(m\theta)&-\sin(m\theta)\\
+\sin(m\theta)&\cos(m\theta)\\
+\end{bmatrix}
+\begin{bmatrix}
+q_1\\
+q_2
+\end{bmatrix}
+=\begin{bmatrix}
+q_1\cdot\cos(m\theta)-q_2\cdot\sin(m\theta)\\
+q_1\cdot\sin(m\theta)+q_2\cdot\cos(m\theta)
+\end{bmatrix}=
+\begin{bmatrix}
+\cos(m\theta)\\
+\cos(m\theta)\\
+\end{bmatrix}
+\odot
+\begin{bmatrix}
+q_1\\
+q_2
+\end{bmatrix}
++
+\begin{bmatrix}
+\sin(m\theta)\\
+\sin(m\theta)\\
+\end{bmatrix}
+\odot
+\begin{bmatrix}
+-q_2\\
+q_1
+\end{bmatrix}
+$$
+
+因此在实现上, 可以先将 $\mathbf{q}$ 保存两份: $\mathbf{q}$ 以及 $\mathbf{q}'$, 其中
+
+$$
+\mathbf{q}'=[-q_2, q_1, -q_4, q_3, ..., -q_d, q_{d-1}]^T
+$$
+
+下面是具体实现:
+
+$$
+\text{positionenc} = \begin{bmatrix}
 0\cdot10000^{-\frac{0}{d} }&0\cdot10000^{-\frac{2}{d} }&\cdots&0\cdot10000^{-\frac{d-2}{d} } \\
 1\cdot10000^{-\frac{0}{d} }&1\cdot10000^{-\frac{2}{d} }&\cdots&1\cdot10000^{-\frac{d-2}{d} } \\
 \vdots & \vdots & \ddots & \vdots\\
 (L-1)\cdot10000^{-\frac{0}{d} }&(L-1)\cdot10000^{-\frac{2}{d} }&\cdots&(L-1)\cdot10000^{-\frac{d-2}{d} } \\
-\end{bmatrix}
+\end{bmatrix}\in\mathbb{R}^{L\times\frac{d}{2}}
 $$
 
 
 ```python
 # 使用逻辑: 每一次 attention 之前都先对 query, key, value 做旋转处理 (value 未必需要)
+def apply_rotary(query):
+    # ============ 旋转 ===============
+    # query, key, value: (B, num_head, L, head_dim)
+    head_dim = query.dim(-1)
+    position_enc = torch.tensor([[i * 10000 ** (-2*j/head_dim) for j in range(head_dim//2)] for i in range(L)])  # (L, head_dim // 2)
+    # sin: (L, head_dim // 2), cos: (L, head_dim // 2)
+    sin, cos = torch.sin(position_enc), torch.cos(position_enc)
 
-# ============ 旋转 ===============
-# query, key, value: (B, num_head, L, head_dim)
-position_enc = torch.tensor([[i * 10000 ** (-2*j/head_dim) for j in range(head_dim//2)] for i in range(L)])  # (L, head_dim // 2)
-# sin: (L, head_dim // 2), cos: (L, head_dim // 2)
-sin, cos = torch.sin(position_enc), torch.cos(position_enc)
+    # stack 后的形状是 (L, head_dim // 2, 2)
+    # (0, 1, ..., d/2-1) -> (0, 0, 1, 1, ..., d/2-1, d/2-1)
+    sin_pos = torch.stack([sin, sin], dim=-1).reshape_as(sinusoidal_pos)
 
-# sin [θ0,θ1,θ2......θd/2-1] -> sin_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-sin_pos = torch.stack([sin, sin], dim=-1).reshape_as(sinusoidal_pos)
-# cos [θ0,θ1,θ2......θd/2-1] -> cos_pos [θ0,θ0,θ1,θ1,θ2,θ2......θd/2-1,θd/2-1]
-cos_pos = torch.stack([cos, cos], dim=-1).reshape_as(sinusoidal_pos)
-# rotate_half_query [-q1,q0,-q3,q2......,-qd-1,qd-2]
-rotate_half_query = torch.stack([-query[..., 1::2], query[..., ::2]], dim=-1).reshape_as(query)
-query = query * cos_pos + rotate_half_query * sin_pos
-# apply to key, value
+    # stack 后的形状是 (L, head_dim // 2, 2)
+    # (0, 1, ..., d/2-1) -> (0, 0, 1, 1, ..., d/2-1, d/2-1)
+    cos_pos = torch.stack([cos, cos], dim=-1).reshape_as(sinusoidal_pos)
 
-# ========= 普通的 dot-product attention ==========
-score = torch.matmul(query_layer, key_layer.transpose(-1, -2))
-# ...
+    # rotate_half_query:
+    # stack 后
+    # [(-q1, q0), (-q3, q2), ..., (-qd-1. qd-2)]
+    # reshape 后, 其实也就是展平
+    # [-q1,q0,-q3,q2......,-qd-1,qd-2]
+    rotate_half_query = torch.stack([-query[..., 1::2], query[..., ::2]], dim=-1).reshape_as(query)
+    query = query * cos_pos + rotate_half_query * sin_pos
+    return query
+
+# x: (B, num_heads, L, head_dim) 表示上一层的输入
+query = query_layer(x)
+key = key_layer(x)
+value = value_layer(x)
+
+query = apply_rotary(query)
+key = apply_rotary(key)
+
+# ========= 普通的 dot-product attention, 参考前面的小节 ==========
+x = scaled_dot_product_attention(query, key, value)
+```
+
+### Post-LayerNorm (原始 transformer) vs Pre-LayerNorm (推荐)
+
+- 参考博客: [https://sh-tsang.medium.com/review-pre-ln-transformer-on-layer-normalization-in-the-transformer-architecture-b6c91a89e9ab](https://sh-tsang.medium.com/review-pre-ln-transformer-on-layer-normalization-in-the-transformer-architecture-b6c91a89e9ab)
+
+```python
+# Post-LayerNorm
+x1 = multi_head_attention(x)
+x = x + x1
+x = layernorm(x)
+x1 = ffn(x)
+x = x + x1
+x = layernorm(x)
+
+# Pre-LayerNorm
+x1 = layernorm(x)
+x1 = multi_head_attention(x1)
+x = x + x1
+x1 = layernorm(x)
+x1 = ffn(x)
+x = x + x1
 ```
 
 ### RMSNorm
