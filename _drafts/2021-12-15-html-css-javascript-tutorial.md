@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(LTS) html/css/javascript tutorial"
+title: "(LTS) 前端基础知识"
 date: 2021-12-15 22:30:04 +0800
 ---
 
@@ -20,6 +20,97 @@ html 是一种标记语言，换句话说，是一种按照某种格式来书写
 
 MDN Docs: [https://developer.mozilla.org](https://developer.mozilla.org)
 CheatSheet: [https://htmlcheatsheet.com/](https://htmlcheatsheet.com/)
+
+## 前端知识查漏补缺
+
+### CORS: (Cross-Origin Resource Sharing)
+
+- FastAPI 的解释: [https://fastapi.tiangolo.com/tutorial/cors/](https://fastapi.tiangolo.com/tutorial/cors/)
+- MDN: [https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS)
+
+以下是一段 javascript 发请求的例子
+
+```js
+const data = {
+  key1: 'value1',
+  key2: 'value2',
+  key3: 'value3'
+};
+
+// 假设说当前的网页地址是 https://example.com/page.html, 那么可以简单改为:
+// fetch('/endpoint')
+fetch('https://example.com/endpoint', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(data),
+})
+.then(response => {
+  if (!response.ok) {
+    throw new Error('Network response was not ok');
+  }
+  return response.json();
+})
+.then(data => {
+  console.log('Success:', data);
+})
+.catch(error => {
+  console.error('Error:', error);
+});
+```
+
+Cross-Origin Resource Sharing: 所谓 Origin, 它由网络协议, IP 与端口构成的三元组确定, 例如下面几个都是不同的源:
+
+- `http://localhost`
+- `https://localhost`
+- `http://localhost:8080`
+
+它们虽然 IP 相同, 但是协议或端口号不同, 视为不同的源. 浏览器在处理这类跨源访问时, 会引入一种机制叫做 CORS: 自动添加额外的 header 来对其他的源发送请求, 而其他的源可以设置一些策略来阻止或允许访问(例如只允许某些源的来访问自己).
+
+**例子**
+
+假设当前的 javascript 脚本部署在 `https://for.example` 下
+
+```js
+const fetchPromise = fetch("https://bar.other");
+
+fetchPromise
+  .then((response) => response.json())
+  .then((data) => {
+    console.log(data);
+  });
+```
+
+浏览器发送的请求格式如下: 特别注意 `Origin: https://foo.example` 这一部分表明了自己的源
+
+```
+GET /resources/public-data/ HTTP/1.1
+Host: bar.other
+User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10.14; rv:71.0) Gecko/20100101 Firefox/71.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+Accept-Language: en-us,en;q=0.5
+Accept-Encoding: gzip,deflate
+Connection: keep-alive
+Origin: https://foo.example
+```
+
+而 `https://bar.other` 服务器返回的数据类似这样, 特别注意 `Access-Control-Allow-Origin: *` 表明允许任意源的访问
+
+```
+HTTP/1.1 200 OK
+Date: Mon, 01 Dec 2008 00:23:53 GMT
+Server: Apache/2
+Access-Control-Allow-Origin: *
+Keep-Alive: timeout=2, max=100
+Connection: Keep-Alive
+Transfer-Encoding: chunked
+Content-Type: application/xml
+
+[…XML Data…]
+```
+
+更复杂的机制例如先发请求头给目标源, 目标源返回允许的操作, 然后请求方再发送真正的请求, 目标源再返回数据. 此处从略, 请参考: [MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS), 而 FastAPI 中怎么使用这一机制参考 [FastAPI](https://fastapi.tiangolo.com/tutorial/cors/).
 
 ## HTML
 
@@ -221,13 +312,112 @@ CSS 框模型实质上是一个包围每个 HTML 元素的框。它包括：外�
 
 参考资料: [https://www.w3school.com.cn/css/css_boxmodel.asp](https://www.w3school.com.cn/css/css_boxmodel.asp)
 
-### SASS
+**伪元素**
+
+```css
+.element::before {
+  content: "►";
+  padding-right: 8px;
+}
+
+.element::after {
+  content: "◄";
+  padding-left: 8px;
+}
+```
+
+当它应用于 html 中时
+
+```html
+<div class="element">这是一个元素</div>
+```
+
+呈现的结果类似于
+
+```
+►这是一个元素◄
+```
+
+上面的 `::after` 和 `::before` 语法就是伪元素, 相当于在每个 `class="element"` 的**元素内**的所有内容之前和之后各添加了一个元素.
+
+**浮动元素与clear**
+
+参考: [https://developer.mozilla.org/en-US/docs/Web/CSS/float](https://developer.mozilla.org/en-US/docs/Web/CSS/float)
+
+```html
+<section>
+  <div class="left">1</div>
+  <div class="left">2</div>
+  <div class="right">3</div>
+  <p>
+    Lorem ipsum dolor sit amet, consectetur adipiscing elit. Morbi tristique
+    sapien ac erat tincidunt, sit amet dignissim lectus vulputate. Donec id
+    iaculis velit. Aliquam vel malesuada erat. Praesent non magna ac massa
+    aliquet tincidunt vel in massa. Phasellus feugiat est vel leo finibus
+    congue.
+  </p>
+</section>
+```
+
+```css
+section {
+  box-sizing: border-box;
+  border: 1px solid blue;
+  width: 100%;
+  float: left;
+}
+
+div {
+  margin: 5px;
+  width: 50px;
+  height: 150px;
+}
+
+.left {
+  float: left;
+  background: pink;
+}
+
+.right {
+  float: right;
+  background: cyan;
+}
+```
+
+首先, class 为 left 或 right 的元素被设置为了浮动, 被设置为 `float: left` 的元素会尽可能往左移动, 直到它触碰到块的左边缘或另一个浮动元素的边缘. 同理, 被设置为了 `float: right` 的元素会尽可能向右移动, 直到触碰到另一个浮动元素的边缘. 而其他非浮动元素利用剩余的空间进行排版.
+
+特殊情况: 假设在原始的 html 代码里增加若干个 `<div class="right">3</div>` 直至其碰到 `<div class="left">2</div>`, 这种情况下, “装不下的” right 元素不会于 left 元素重叠, 而是另起一行继续排布在右侧.
+
+上面的代码如果去掉 section 中设置的 `float: left;`, 可能会导致 section 的蓝色边框装不下 left 和 right. 这是因为**父元素的高度是由非浮动子元素的高度决定**的, 在这个例子中, section 的非浮动子元素只有 p 元素, 假设 p 元素的高度不超过 left 和 right 的话, 就会导致 section 的蓝色边框无法包裹住 left 和 right.
+
+如果不设置 section `float: left;`, 还可以在 css 中增加一个伪元素达到效果:
+
+```css
+section {
+  box-sizing: border-box;
+  border: 1px solid blue;
+  width: 100%;
+}
+
+section::after {
+  content: "";
+  display: table;
+  clear: both;
+}
+```
+
+这里的 `section::after` 表示这是一个伪元素, 这样便形成了类似于 `<section>...<div style="content: ''; display: table; clear: both;"></div></section>` 的结果 (注意这只是便于理解, 实际上不等同), 而 `clear: both` 的作用是清除左右的浮动, 因此保证这个伪元素会位于所有浮动元素的下面, 而伪元素本身不是浮动的, 因此可以决定父元素的高度.
+
+要理解 clear 的含义, 可以将 `p` 标签增加属性 `style="clear: left"`, 然后调整 css 中 `.left` 选择器的 `height`, 会发现 `p` 标签会位于 left 元素的下方开始排版, 而不是在 left 元素的右侧排版. 实际上, 不加 `style="clear: left"` 的 `p` 标签, 实际上是 `clear: none`.
+
+
+## SASS (TODO)
 
 由于 css 文件中可能会存在许多冗余，例如同样的样式对于多个标签具有公共性，这样需要做统一修改时会变得麻烦且容易出错，sass 可以解决这一问题。具体的做法是：sass 定义了一套”语言“，而 sass 是一个转换工具，可以将 sass 这套语言转换为标准的 css 文件。引用 sass 官方的介绍词：
 
 > Sass is the most mature, stable, and powerful professional grade CSS extension language in the world.
 
-#### hello world
+### hello world
 
 sass 工具的输入是一个 scss 文件，输出是一个 css 文件，例如：
 
@@ -254,7 +444,7 @@ body {
 
 备注：旧版本定义的文件格式为 `.sass` 文件，与 `.scss` 文件定义的语法格式区别不大，主要区别在于 scss 文件使用了花括号与分号进行代码块的限定（有点像 C 语言风格），而 sass 文件则依赖于缩进（有点像 Python 语言风格）。就目前来说，推荐使用 scss 文件格式，因此转换命令会稍显诡异，例如：`sass xxx.scss xxx.css`。
 
-#### tutorial
+### tutorial
 
 [Sass 官网](https://sass-lang.com/guide)
 
@@ -267,24 +457,24 @@ body {
 <html>
     <head> 
         <meta charset="utf-8"> 
-        <title>菜鸟教程(runoob.com)</title> 
+        <title>This is Title</title> 
     </head>
     <body>
-
-    	<h1>我的第一段 JavaScript</h1>
+    	<h1>My JavaScript Code</h1>
     	<p id="demo">
     		JavaScript 能改变 HTML 元素的内容。
     	</p>
-        <script>
-		// 注释
-        function myFunction()
-        {
-            x=document.getElementById("demo");  // 找到元素
-            x.innerHTML="Hello JavaScript!";    // 改变内容
-        }
-        </script>
+        
         <button type="button" onclick="myFunction()">点击这里</button>
     </body>
+    <script>
+    // 注释
+    function myFunction()
+    {
+        x=document.getElementById("demo");  // 找到元素
+        x.innerHTML="Hello JavaScript!";    // 改变内容
+    }
+    </script>
 </html>
 ```
 
@@ -292,3 +482,57 @@ javascript 指的是 `script` 标签中的内容，上例中 `botton` 标签相�
 
 `script` 标签的位置：参考 [CSDN](https://www.cnblogs.com/xiangkejin/p/6411792.html)。
 
+### 函数与导入
+
+```js
+// Shapes.js
+// export 表示这个函数可以被其他模块导入, 类似于 C 语言里的 extern
+// 一个文件最多只能有一个 default
+export default function Square() {
+  return <button className="square">X</button>;
+}
+
+export function Circle() {
+  return <button className="circle">O</button>;
+}
+```
+
+在另一个 js 脚本中, 可以使用这种方法来导入上面模块中的函数
+
+```js
+// S 指向 Square, MyCircle 指向 Circle
+import S, { Circle as MyCircle } from './Shapes.js';
+```
+
+## node
+
+### npm 相关
+
+假设 `package.json` 中包含如下内容
+
+```json
+{
+  "scripts": {
+    "start": "npm run make-i18n && vite",
+    "make-i18n": "node scripts/make-i18n-translations.cjs",
+  }
+}
+```
+
+使用这条启动命令
+
+```bash
+npm run start -- --port 5000
+```
+
+第一个 `--` 的作用表示后面的 `--port 5000` 不是 `npm run` 的参数, 也就是说上面的命令会被转化为
+
+```bash
+npm run make-i18n && vite --port 5000
+# 根据进一步转化为
+node scripts/make-i18n-translations.cjs && vite --port 5000
+```
+
+## React (TODO)
+
+官方教程: [井字棋游戏](https://zh-hans.react.dev/learn/tutorial-tic-tac-toe)

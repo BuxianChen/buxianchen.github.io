@@ -1,10 +1,10 @@
 ---
 layout: post
-title: "(LTS) Jekyll 排版记录"
+title: "(LTS) 排版样例"
 date: 2021-12-19 22:30:04 +0800
 ---
 
-本篇博客主要用于记录 Jekyll 排版的一些样例
+本篇博客主要测试各类“元素”怎样被正常解析
 
 
 数学公式使用的基本逻辑是使用 [MathJax](https://github.com/mathjax/MathJax)
