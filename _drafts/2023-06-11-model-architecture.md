@@ -89,7 +89,6 @@ def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.
 - 公式参考 [作者原文公式](https://spaces.ac.cn/archives/8265)
 - 实现参考: [huggingface](https://github.com/huggingface/transformers/blob/main/src/transformers/models/roformer/modeling_roformer.py)
 
-#### 推导
 
 笔者按照自己的思路讲述 RoPE 编码的来由, 我们考虑 self-attention 的情形, 假设对于原始序列送入 Embedding 层后, 不加上位置编码, 我们应该怎样把位置信息考虑进去?
 
@@ -171,7 +170,7 @@ k = (k1, k2)
 从上面可知, 假设 $\mathbf{q}$ 与 $\mathbf{k}$ 都是 $d$ 维向量, 我们可以在对角线上使用 $d/2$ 个不同的 $\theta$ 值, RoFormer 作者采用了
 
 $$
-\theta_i=10000^{-\frac{2i}{d}}, \quad i=1,\ldots,\frac{d}{2}
+\theta_i=10000^{-\frac{2i}{d}}, \quad i=0,\ldots,\frac{d}{2}-1
 $$
 
 由于变换 $f$ 在扩展到 $d$ 维之后变换矩阵只有对角线上有值(将变换矩阵视为 2x2 的分块矩阵, 则只有对角线上的块有值). 因此 $f$ 可以有更简单的形式, 首先回到 2 维情形:
@@ -216,7 +215,54 @@ $$
 \mathbf{q}'=[-q_2, q_1, -q_4, q_3, ..., -q_d, q_{d-1}]^T
 $$
 
-下面是具体实现:
+也就是最终的计算方式是: 假设 $\mathbf{q}$ 位于第 $m$ 个 token id 的位置上,
+
+$$
+\text{rotary}(\mathbf{q}, m)=\begin{bmatrix}
+\cos(m\theta_0)\\
+\cos(m\theta_0)\\
+\vdots\\
+\cos(m\theta_{d/2-1})\\
+\cos(m\theta_{d/2-1})\\
+\end{bmatrix}
+\odot
+\mathbf{q}
++
+\begin{bmatrix}
+\sin(m\theta_0)\\
+\sin(m\theta_0)\\
+\vdots\\
+\sin(m\theta_{d/2-1})\\
+\sin(m\theta_{d/2-1})\\
+\end{bmatrix}
+\odot
+\mathbf{q}'
+$$
+
+其中
+
+$$
+\theta_i=10000^{-\frac{2i}{d}}, \quad i=0,\ldots,\frac{d}{2}-1
+$$
+
+我们仔细看一下 $\theta_i$ 的定义, 首先 $\theta_i$ 随着 $i$ 的增大单调递减, 且 $0\le\theta_{d/2-q}\le\theta_i\le\theta_0= 1$
+
+$$
+\begin{align}
+&d=128:\quad&\theta_0=1,&\theta_1\approx0.866,&\theta_2\approx0.750,&\ldots,&\theta_{63}=0.0001\\
+&d=64:\quad&\theta_0=1,&\theta_1\approx0.750,&\theta_2\approx0.562,&\ldots,&\theta_{31}=0.0001\\
+\end{align}
+$$
+
+注意, 这里看 $d=128,64$ 的原因是使用 RoPE 作为位置编码时, 会将原始的隐层维数切分 head 之后再应用 RoPE, 一个例子是 QWen-7B 模型的隐层维数是 4096, 但其 head 数是 32, 因此 head dim 为 128.
+
+(TODO) 然后我们回过头去看完整的 attention 计算, 只考虑一个 head, 第 $m$ 个位置的隐层输出的计算公式为
+
+$$
+\text{attention}(\mathbf{x}_m)=\text{normalize}(\langle\mathbf{q}_k,\mathbf{m}_1\rangle\mathbf{v}_1+\cdots+\langle\mathbf{q}_m,\mathbf{k}_d\rangle\mathbf{v}_d)
+$$
+
+**代码实现**
 
 $$
 \text{positionenc} = \begin{bmatrix}
@@ -266,6 +312,25 @@ key = apply_rotary(key)
 # ========= 普通的 dot-product attention, 参考前面的小节 ==========
 x = scaled_dot_product_attention(query, key, value)
 ```
+
+**RoPE 的长度外推方法**
+
+所谓长度外推, 是指模型训练时总会设置一个最大长度, 譬如说 2048, 而现在希望将其上下文长度扩大到 9192. 最理想的解决方案是不训练, 直接扩大到 9192 上下文做推理 (允许对模型权重或 position embedding 做一些非训练的调整), 次理想的解决方案是加入一些更长的训练数据微调, 但即使训练也应该利用已经训练好的模型参数, 而不是完全重训. 而 Transformer 架构的模型一般的外推策略只涉及到 position embedding 的特殊处理
+
+根据作者博客 [https://kexue.fm/archives/9675](https://kexue.fm/archives/9675) 的描述, 存在多种长度外推方案, 这里只介绍其中的一种:
+
+假设原先的最大长度为 $L$, 需要扩充 $k$ 倍, 即需要的上下文长度为 $kL$. 那么应该将 positionenc 定义为:
+
+$$
+\text{positionenc} = \begin{bmatrix}
+\frac{0}{k}\cdot10000^{-\frac{0}{d} }&\frac{0}{k}\cdot10000^{-\frac{2}{d} }&\cdots&\frac{0}{k}\cdot10000^{-\frac{d-2}{d} } \\
+\frac{1}{k}\cdot10000^{-\frac{0}{d} }&\frac{1}{k}\cdot10000^{-\frac{2}{d} }&\cdots&\frac{1}{k}\cdot10000^{-\frac{d-2}{d} } \\
+\vdots & \vdots & \ddots & \vdots\\
+\frac{(kL-1)}{k}\cdot10000^{-\frac{0}{d} }&\frac{(kL-1)}{k}\cdot10000^{-\frac{2}{d} }&\cdots&\frac{(kL-1)}{k}\cdot10000^{-\frac{d-2}{d} } \\
+\end{bmatrix}\in\mathbb{R}^{kL\times\frac{d}{2}}
+$$
+
+然后直接按上面的代码进行实现即可
 
 ### Post-LayerNorm (原始 transformer) vs Pre-LayerNorm (推荐)
 

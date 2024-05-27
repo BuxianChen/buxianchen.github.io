@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "(P1) 并发 (for Python)"
+title: "(P1) 多进程/多线程/协程 (for Python)"
 date: 2024-02-22 10:05:04 +0800
 labels: [python]
 ---
@@ -8,6 +8,8 @@ labels: [python]
 ## 动机、参考资料、涉及内容
 
 threading, multiprocessing, asyncio 内容杂记
+
+例子部分是一些使用按理, 其余部分为 原理/API/源码 介绍
 
 ## os
 
@@ -848,3 +850,103 @@ class Popen(object):
         if self.finalizer is not None:
             self.finalizer()  # 此处内部会关闭 parent_r 和 parent_w
 ```
+
+### 例子 (Cookbook, 后续再整理)
+
+#### 例 1: 进程间共享数据
+
+```python
+from multiprocessing import Process, Value
+from threading import Thread
+import time
+
+class MyWorker(Process):
+    def __init__(self, a):
+        super().__init__(daemon=True)
+        self.a = a
+    
+    def run(self):
+        while True:
+            time.sleep(1)
+            # print("from worker: ", self.a)
+            print("from worker: ", self.a.value)
+
+    def add_one(self):
+        self.a += 1
+
+class Scheduler:
+    def __init__(self, num_workers=1):
+        self.num_workers = num_workers
+        self.workers = []
+
+    # def update_worker(self):
+    #     while True:
+    #         time.sleep(5)
+    #         for worker in self.workers:
+    #             worker.add_one()
+    #             print("from scheduler:", worker.a)
+        
+    def update_worker(self):
+        while True:
+            time.sleep(5)
+            for worker in self.workers:
+                worker.a.value += 1
+                # print("from scheduler:", worker.a)
+                print("from scheduler:", worker.a.value)
+
+    def start(self):
+        for i in range(self.num_workers):
+            # self.workers.append(MyWorker(1))
+            a = Value('i', 1)  # i 表示整数
+            self.workers.append(MyWorker(a))
+        for worker in self.workers:
+            worker.start()
+        Thread(target=self.update_worker).start()
+
+if __name__ == "__main__":
+    s = Scheduler(num_workers=2)
+    s.start()
+```
+
+整个脚本的目的是: 每隔 1 秒, 每个 worker 都打印 `a` 的值, 然后由 scheduler 控制每隔 5 秒, 更新 worker 中 `a` 的值
+
+如果使用被注释掉的内容, 达不到效果, 原因是进程间的数据共享必须用 `multiprocessing.Value`, `multiprocessing.Queue`, `multiprocessing.Array` 等, 另外还有一种做法是使用 `multiprocessing.Manager()`. 使用 `multiprocessing.Manager()` 实际上是增加了一个进程, 用来管理共享的数据, 并通过通信来同步数据, 而 `multiprocessing.Queue` 这种不会产生额外的进程, 因此效率较高.
+
+#### 例 2: multiprocessing.Manager
+
+```python
+from multiprocessing import Process, Manager
+
+def worker(shared_list, shared_dict, key, value):
+    shared_list.append(len(shared_list))  # 向列表中添加一个元素
+    shared_dict[key] = value  # 向字典中添加一个键值对
+
+if __name__ == "__main__":
+    with Manager() as manager:
+        shared_list = manager.list()  # 创建一个共享列表
+        shared_dict = manager.dict()  # 创建一个共享字典
+
+        # 创建两个工作进程
+        p1 = Process(target=worker, args=(shared_list, shared_dict, 'key1', 'value1'))
+        p2 = Process(target=worker, args=(shared_list, shared_dict, 'key2', 'value2'))
+
+        # 启动进程
+        p1.start()
+        p2.start()
+
+        # 等待进程结束
+        p1.join()
+        p2.join()
+
+        # 打印结果
+        print("Shared List:", shared_list)
+        print("Shared Dict:", shared_dict)
+```
+
+解释: 首先, manager 是一个独立的进程, 在 `p1` 进程执行 `shared_list.append(len(shared_list))` 时, 会触发 `manager` 进程与 `p1` 进程间的进程间通信 (Inter-Process Communication, IPC), IPC 的常见机制是: 管道(Pipes), 消息队列(Message Queues), 共享内存(Shared Memory), 信号量(Semaphores), 套接字(Sockets), 信号(Signals), 锁(Locks).
+
+- 在使用 `multiprocessing.Manager` 时, 通常是涉及到的 IPC 机制是套接字和管道.
+- 在使用 `multiprocessing.Value` 时, 涉及到的 IPC 机制是共享内存, 为了避免同时写入的冲突, 还要使用锁或信号量
+- 在使用 `multiprocessing.Queue` 时, 涉及到的 IPC 机制是管道和锁.
+
+管道机制的效率比共享内存要低, 因为管道机制通常涉及到把数据从进程的内存复制进管道, 以及从管道中复制数据进内存. 而共享内存不存在这种复制过程.
