@@ -139,10 +139,6 @@ Content-Type: application/xml
 <{tagname} {attrname1}="xxx" {attrname2}="yyy">{content}</{tagname}>
 ```
 
-```
-<img loading="lazy" src="/images/logo.png" width="258" height="39" />
-```
-
 通用的几个属性有：
 
 - class：用于css中，一个元素的class标签中可以填入多个
@@ -150,39 +146,61 @@ Content-Type: application/xml
 - style：指定文本样式，例如文字颜色
 - title: 鼠标悬停显示 title 的属性值
 
-标签罗列
+**注意事项**
 
-- `<br />` 表示换行，`<hr />` 表示画一条水平线
+HTML 源代码中多个连续的空格或空行都将被视为一个空格
 
-- `h1` - `h6` 表示标题，`p` 表示段落，`a` 表示超链接，`cite` 表示引用
+**标签罗列**
 
-- `b` 表示加粗，`i` 表示斜体，`sup` 表示上标，`sub` 表示下标，`del` 表示删除字，`ins` 表示在文字加上底线
+`<br />` 表示换行，`<hr />` 表示画一条水平线
 
-- `code`、`kbd`、`samp`、`var`、`tt` 这几个标签常用于显示计算机相关的文本
+`h1` - `h6` 表示标题，`p` 表示段落，`a` 表示超链接，`cite` 表示引用
 
-- `<abbr title="World Wide Web">WWW</abbr>`，鼠标悬停时会显示 title 中的内容
+`b` 表示加粗，`i` 表示斜体，`sup` 表示上标，`sub` 表示下标，`del` 表示删除字，`ins` 表示在文字加上底线
 
-- 样式
+`div` 为块级容器，`span` 为内联容器
 
-  ```html
-  <head>
-  
-  <!-- 直接使用style标签进行定义 -->
-  <style type="text/css">
-  	body {background-color:yellow}
-  	p {color:blue}
-  </style>
-  
-  <!-- 使用css文件 -->
-  <link rel="stylesheet" type="text/css" href="mystyle.css">
-  </head>
-  ```
+`<abbr title="World Wide Web">WWW</abbr>`，鼠标悬停时会显示 title 中的内容
 
-- `div` 为块级容器，`span` 为内联容器
+`img` 标签:
 
-注意事项
+```html
+<img loading="lazy" src="/images/logo.png" width="258" height="39" />
+```
 
-- HTML 源代码中多个连续的空格或空行都将被视为一个空格
+`label` 标签: 这里 `input` 标签是一个单选框, 加上 `label` 标签后, 不仅在程序上 `label` 和 `input` 是“绑定”的关系, 而且可以使得用户点击在 `label` 显示的文字区域 (例如下面的 `Do you like cheese?`) 进行点击时, 也能勾选或取消 `input`.
+
+```html
+<div class="preference">
+  <label for="cheese">Do you like cheese?</label>
+  <input type="checkbox" id="cheese" />
+</div>
+
+<!-- 或者这种用法 -->
+
+<div class="preference">
+  <label for="cheese1">
+    Do you like cheese?<input type="checkbox" id="cheese1" />
+  </label>
+</div>
+```
+
+**应用 CSS**
+
+```html
+<head>
+
+<!-- 直接使用style标签进行定义 -->
+<style type="text/css">
+  body {background-color:yellow}
+  p {color:blue}
+</style>
+
+<!-- 使用css文件 -->
+<link rel="stylesheet" type="text/css" href="mystyle.css">
+</head>
+```
+
 
 ### 代码规范
 
@@ -192,21 +210,29 @@ Content-Type: application/xml
 
 ## CSS
 
+CSS 用于美化 html 的显示, 确定每个标签以什么样式显示. 可以说 html 决定内容, CSS 决定排版, javascript 决定交互 (交互可以改变内容与排版)
+
 ### tutorial
 
-放在 html 的 head 标签中
+**css 嵌入在 html 文件中**
+
+下面这段代码
 
 ```css
 <style type="text/css">
+/* p 表示 p 标签 */
 p {color:blue}
+/* #para 表示 id 为 para 的标签*/
 #para
 {
 	text-align:center;
-    color:red;
+  color:red;
 }
-/*comment*/
+/* .center 表示 class 设置为 center 的标签 */
 .center {text-align:center;}
-p.center {text-align:center;}
+/* p.center 表示 class 设置为 center 的 p 标签 */
+/* p.center 会首先继承 p 和 .center 的设置, 即 color:blue;text-align:center; 然后再用 color:red; 覆盖掉 color:blue; 因此最终变为 color:red;text-align:center; 也就是居中显示且字体为红色 */
+p.center {color:red;}
 </style>
 ```
 
@@ -218,7 +244,9 @@ p.center {text-align:center;}
 
 `p.center` 表示 html 的 `p` 标签且 `class` 属性为 `center` 的标签采用此样式
 
-目录结构如下
+所有的这些大括号前面的内容称为选择器
+
+**html 与 css 代码分离**
 
 ```
 ROOT/
@@ -481,6 +509,38 @@ body {
 javascript 指的是 `script` 标签中的内容，上例中 `botton` 标签相当于是调用者，当用户点击时，这个事件对应于 `botton` 的 `onclick` 属性，此时触发 `onclick` 的属性内容 `myFunction()`，调用 `script` 中定义的函数。
 
 `script` 标签的位置：参考 [CSDN](https://www.cnblogs.com/xiangkejin/p/6411792.html)。
+
+### DOM
+
+官方文档: [https://developer.mozilla.org/zh-CN/docs/Web/API/Document_Object_Model](https://developer.mozilla.org/zh-CN/docs/Web/API/Document_Object_Model)
+
+document 指的是整个 html 文件, 也就是它的根节点, 其直接子节点是 html 标签, 而 html 标签则一般包括 head 与 body 标签.
+
+```javascript
+// document.querySelector
+// querySelector 使用的是深度优先搜索, 用于查找第一个匹配的元素
+// 在这个例子中, 先找到 id 为 productTable 的元素, 然后再在它里面找到第一个标签类型为 tbody 的标签 (tbody 一般来说是 table 标签的子标签, 表示表格的 body 部分, 而 thead 标签表示表头)
+const mytbody = document.querySelector('#productTable tbody');
+
+// document.createElement, innerHTML
+// 以下代码片段 categoryRow 最终会变成
+// <tr><th colspan="2">abc</th></tr>
+const product = {category: "abc", score: 90};
+const categoryRow = document.createElement('tr');
+console.log(categoryRow instanceof HTMLTableRowElement);  // 控制台输出: true
+categoryRow.innerHTML = `<th colspan="2">${product.category}</th>`;
+
+// appendChild, textContent
+// 以下代码会在 body 标签的末尾加上 <div><p>hello</p></div>
+// textContent 与 innerHTML 的区别是前者不会进行 html 转义, 而后者会转义
+const mydiv = document.createElement('div');
+const p1 = document.createElement('p');
+p1.textContent = "hello";
+// p1.textContent = '<span style="color:yellow;">1234</span>';
+// 被转化为 <p>&lt;span style="color:yellow;"&gt;1234&lt;/span&gt;</p>
+mydiv.appendChild(p1)
+document.querySelector("body").appendChild(mydiv);
+```
 
 ### 函数与导入
 
