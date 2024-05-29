@@ -38,15 +38,15 @@ $$
 然后我们看一下 Scaled Dot Product Attention 的定义: 假设有 3 个矩阵 $Q,K,V\in\mathbb{R}^{L\times D}$, 采用注意力机制后得到的表示 $Y\in\mathbb{R}^{L\times D}$ 为:
 
 $$
-Y=\frac{1}{\sqrt{D}}\text{softmax}(QK^T)V
+Y=\text{softmax}(\frac{QK^T}{\sqrt{D}})V
 $$
 
 其中 $\text{softmax}$ 是对矩阵的每一行做归一化处理, 我们先忽略掉缩放因子 $\frac{1}{\sqrt{D}}$, 注意到这里似乎与之前的讨论稍有不同: 之前我们是希望用 $L$ 个向量汇总成一个向量, 而这里却仍旧是 $L$ 个向量. 这个区别应当这样理解, 对于每个特定的 $1 \le l \le L$ 来说, 我们希望汇总所有的 $L$ 个向量, 得到一个新的汇总表示, 也就是 $Y$ 的第 $l$ 行, 而如果我们只关注 $Y$ 的第 $l$ 行, 我们会发现, 上面的式子实际上是:
 
 $$
-\alpha'_i = \langle\mathbf{q}_l, \mathbf{k}_i\rangle\\
+\alpha'_i = \frac{\langle\mathbf{q}_l, \mathbf{k}_i\rangle}{\sqrt{D}}\\
 \alpha_i=[\text{softmax}(\alpha'_1,\ldots,\alpha'_L)]_i\\
-\mathbf{y}_l=\frac{1}{\sqrt{D}}\sum_{i=1}^{L}{\alpha_i\mathbf{v}_i}
+\mathbf{y}_l=\sum_{i=1}^{L}{\alpha_i\mathbf{v}_i}
 $$
 
 而 transformers 中的所谓 self-attention, 其实就只是在此基础上增加一条: $Q,K,V$ 全部来自于上一层的表示 $X\in\mathbb{R}^{L\times D}$, 其实也就是 $Q,K,V$ 是通过 $X$ 线性变换得到的.
