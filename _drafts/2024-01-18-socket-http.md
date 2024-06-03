@@ -197,7 +197,7 @@ body-param=value
 
 ```python
 import requests
-requests.get("http://localhost:8000/a/b?q=1&r=23")
+requests.get("http://localhost:8000/a/b", params={"q": 1, "r": 23})
 # 或者也以把 params 直接写在 url 里
 # requests.get("http://localhost:8000/a/b?q=1&r=23")
 ```
