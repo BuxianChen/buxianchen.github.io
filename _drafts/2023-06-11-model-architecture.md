@@ -416,6 +416,33 @@ y = y.transpose(1, 2).reshape(B, L, D)
 从原始论文的实验结果看, 相比于原始的 attention 机制, 使用 Multi-Query Attention 可能会对推理速度提升 5-10 倍, 但训练速度提升几乎可以忽略不计.
 
 
+### Grouped Query Attention (GQA)
+
+GQA 是 MQA 的变体, 采用此结构的模型:
+
+- llama3
+
+```python
+# x: (B, L, D), D = head_dim * num_heads
+# qkv_layer: Linear(in_features=D, out_features=D+2*head_dim*num_key_value_heads)
+# num_key_value_groups = num_heads // num_key_value_heads
+q, k, v = qkv_layer(x).split([D, head_dim*num_key_value_heads, head_dim*num_key_value_heads], dim=-1)
+
+q = q.reshape(B, L, num_head, head_dim).transpose(1, 2)             # (B, num_head, L, head_dim)
+k = k.reshape(B, L, num_key_value_heads, head_dim).transpose(1, 2)  # (B, num_key_value_heads, L, head_dim)
+v = v.reshape(B, L, num_key_value_heads, head_dim).transpose(1, 2)  # (B, num_key_value_heads, L, head_dim)
+
+# [a, b, c], repeats=2 -> [a, a, b, b, c, c]
+k = torch.repeat_interleave(k, dim=1, repeats=num_key_value_groups) # (B, num_head, L, head_dim)
+v = torch.repeat_interleave(v, dim=1, repeats=num_key_value_groups) # (B, num_head, L, head_dim)
+
+scores = q @ k.transpose(-1, -2)  # scores: (B, num_head, L, L)
+weight = torch.nn.softmax(scores, dim=-1)
+y = weight @ v  # (B, num_head, L, L) x (B, num_head, L, head_dim) = (B, num_head, L, head_dim)
+y = y.transpose(1, 2).reshape(B, L, D)
+```
+
+
 ## Models
 
 ### GPT-2
