@@ -313,7 +313,13 @@ key = apply_rotary(key)
 x = scaled_dot_product_attention(query, key, value)
 ```
 
-**RoPE 的长度外推方法**
+#### 变体
+
+RoPE 在实现上有两种风格, 一种是上面介绍的, 称为 GPT-J 风格, 也是原始版本, 也就是使用 $\mathbf{q}$ 的 $q_{2i}, q_{2i+1}$ 应用于 $\theta_i$ 角度的旋转. 另一种风格被称为 GPT-NeoX 风格, 也就是 $q_{i}, q_{d/2+i}$ 应用于 $\theta_i$ 角度的旋转. (这种区分方式可参考 flash-attention 的[注释](https://github.com/Dao-AILab/flash-attention/blob/v2.5.9/flash_attn/layers/rotary.py#L94), huggingface 对 [GPT-J](https://github.com/huggingface/transformers/blob/v4.41.2/src/transformers/models/gptj/modeling_gptj.py#L84) 与 [GPT-NeoX](https://github.com/huggingface/transformers/blob/v4.41.2/src/transformers/models/gpt_neox/modeling_gpt_neox.py#L610) 的实现)
+
+QWen-1 系列均采用 GPT-NeoX 风格的实现
+
+#### RoPE 的长度外推方法
 
 所谓长度外推, 是指模型训练时总会设置一个最大长度, 譬如说 2048, 而现在希望将其上下文长度扩大到 9192. 最理想的解决方案是不训练, 直接扩大到 9192 上下文做推理 (允许对模型权重或 position embedding 做一些非训练的调整), 次理想的解决方案是加入一些更长的训练数据微调, 但即使训练也应该利用已经训练好的模型参数, 而不是完全重训. 而 Transformer 架构的模型一般的外推策略只涉及到 position embedding 的特殊处理
 
