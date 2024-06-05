@@ -70,3 +70,6 @@ b = "sssssssssssssssssssssssssssssssssssssss"
     <circle cx="150" cy="50" r="20" fill="red" />
     <line x1="50" y1="50" x2="150" y2="50" stroke="black" stroke-width="2" />
 </svg>
+
+
+[https://huggingface.co/blog/annotated-diffusion](https://huggingface.co/blog/annotated-diffusion) 有一段引用中使用 latex 公式的做法, 待研究: (1) 直接用 html 怎么写这种公式 (2) hf blog 怎么方便地写这种公式 (推测html是"编译"来的)

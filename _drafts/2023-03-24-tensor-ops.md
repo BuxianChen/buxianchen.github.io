@@ -67,3 +67,49 @@ pytorch 的文档中似乎对各种切片操作没有仔细介绍, 但应该基�
 a[torch.tensor([True, False, True, False]), :]  # 等价于 a[[0, 2], :]
 a[[0, 2, 1], [2, 3, 1]]  # 假设 a 只有两维, 注意返回值为 torch.tensor([a[0, 2], a[2, 3], a[1, 1]])
 ```
+
+## reduce
+
+```python
+import torch
+import einops
+from functools import partial
+x = torch.rand(2, 2, 3)
+mean = eniops.reduce(x, "o ... -> o", "mean")  # (2,)
+var = eniops.reduce(x, "o ... -> o", partial(torch.var, unbiased=False))  # [((x[0]-mean[0])**2)/6, ((x[1]-mean[1])**2)/6]
+# 如果 unbiased = True, 则除以 5 而不是 6
+```
+
+## einops.rearange
+
+```python
+import torch
+from einops.layers.torch import Rearrange
+
+x = torch.tensor([
+    [0, 1, 0, 1, 0, 1, 0, 1],
+    [2, 3, 2, 3, 2, 3, 2, 3],
+    [0, 1, 0, 1, 0, 1, 0, 1],
+    [2, 3, 2, 3, 2, 3, 2, 3],
+    [0, 1, 0, 1, 0, 1, 0, 1],
+    [2, 3, 2, 3, 2, 3, 2, 3],
+]).reshape(1, 1, 6, 8)
+
+Rearrange("b c (h p1) (w p2) -> b (c p1 p2) h w", p1=2, p2=2)(x)
+
+# tensor([[[[0, 0, 0, 0],
+#           [0, 0, 0, 0],
+#           [0, 0, 0, 0]],
+
+#          [[1, 1, 1, 1],
+#           [1, 1, 1, 1],
+#           [1, 1, 1, 1]],
+
+#          [[2, 2, 2, 2],
+#           [2, 2, 2, 2],
+#           [2, 2, 2, 2]],
+
+#          [[3, 3, 3, 3],
+#           [3, 3, 3, 3],
+#           [3, 3, 3, 3]]]])
+```
