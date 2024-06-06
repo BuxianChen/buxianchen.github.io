@@ -612,7 +612,42 @@ def _save(self, output_dir: Optional[str] = None, state_dict=None):
     torch.save(self.args, os.path.join(output_dir, TRAINING_ARGS_NAME))
 ```
 
-## 案例分析 1: run_glue.py
+## dataloader
+
+### shift (for seq2seq model)
+
+训练序列到序列模型, transformers trainer 的处理有特殊之处:
+
+```python
+im_start_token, im_end_token = "<|im_start|>", "<|im_end|>"
+user_token, ai_token = "<|user|>", "<|ai|>"
+
+input_text, target_text = "你是谁", "我是AI助手"
+
+# ======== 此部分逻辑需要自己实现写在 dataset 里 ============
+input_ids = tokenizer.encode(im_start_token+user_token+input_text+im_end_token+im_start_token+ai_token)
+target_ids = tokenizer.encode(target_text+im_end_token)
+data = {
+    "input_ids": input_ids + target_ids
+    "label": [-100]*len(input_ids) + target_ids  # -100 表示这部分不计算损失, 此为 pytorch 里交叉熵损失函数接口的设置
+}
+
+L1 = len(data["input_ids"])
+L2 = len(data["label"])
+L = L1 + L2
+# =========================================================
+
+# ======= data_collator 主要负责做 padding =================
+# 略
+# =========================================================
+
+# ======== 此部分逻辑一般在 XXModelForCasualLM 中内置 =======
+logits = logits[:, :-1, :]  # logits: (B, L, C) -> (B, L-1, C)
+label = label[:, 1:]      # label: (B, L) -> (B, L-1, C)
+# =========================================================
+```
+
+## 案例分析 1 (分类模型): run_glue.py
 
 此例子的源代码参考 [https://github.com/huggingface/transformers/blob/v4.31.0/examples/pytorch/text-classification/run_glue.py](https://github.com/huggingface/transformers/blob/v4.31.0/examples/pytorch/text-classification/run_glue.py), 这是一个分类问题的例子, 运行方式可参考例子的 README, 这里摘录如下:
 
@@ -688,5 +723,4 @@ print(data_args, model_args, train_args)
 ```
 
 
-
-## 案例分析 2: chatglm2
+## 案例分析 2 (序列到序列模型): TODO
