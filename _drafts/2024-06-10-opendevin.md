@@ -77,7 +77,7 @@ make pull-docker-image  # 其实就是 docker pull ghcr.io/opendevin/sandbox
 # frontend/package.json 中包含这一项配置:
 # {"scripts": {"make-i18n": "node scripts/make-i18n-translations.cjs"}}
 # cd frontend && node ./scripts/detect-node-version.js && npm install && npm run make-i18n
-install-frontend-dependencies
+make install-frontend-dependencies
 
 # (6) 将前端代码使用 tsc 编译, 并进行 build
 # frontend/package.json 中包含这一项配置:
@@ -96,11 +96,13 @@ make setup-config    # 命令行交互填写配置文件 config.toml
 # embedding_model="openai"
 
 # (7) 启动 python + fastapi 后端, 占用 3000 端口
+# 备注: 这个可能需要设置 HTTP_PROXY 和 HTTPS_PROXY
 # 其实也就是
 # poetry run uvicorn opendevin.server.listen:app --port 3000
 make start-backend
 
 # (8) 启动前端, 占用 3001 端口
+# 备注: 这个需要 unset HTTP_PROXY 和 HTTPS_PROXY
 # frontend/package.json 中包含这一项配置:
 # {"scripts": {"start": "npm run make-i18n && vite"}}
 # 其实也就是
