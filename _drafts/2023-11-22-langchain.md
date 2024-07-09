@@ -593,6 +593,121 @@ chain_with_history.get_session_history("foobar").messages  # 通过 chain_with_h
 message_history.messages
 ```
 
+### 例子 8 (强制结构化输出)
+
+```python
+from langchain.pydantic_v1 import BaseModel, Field
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.chains.openai_functions import create_structured_output_runnable
+
+class ExecuteCode(BaseModel):
+    """The input to the numexpr.evaluate() function."""
+
+    reasoning: str = Field(
+        ...,
+        description="The reasoning behind the code expression, including how context is included, if applicable.",
+    )
+
+    code: str = Field(
+        ...,
+        description="The simple code expression to execute by numexpr.evaluate().",
+    )
+
+chat_llm = ChatOpenAI()
+template = ChatPromptTemplate.from_messages(
+    [
+        "user", "{text}"
+    ]
+)
+
+
+runnable = create_structured_output_runnable(ExecuteCode, chat_llm, template)
+
+result = runnable.invoke({"input": "1+1"})
+# ExecuteCode(reasoning='The user input is a simple addition operation.', code='1+1')
+```
+
+`create_structured_ouput_runnable` 的本质是:
+
+```python
+runnable = template | chat_llm.bind(...) | get_openai_output_parser([ExecuteCode])
+```
+
+尤其注意 `chat_llm.bind` 一共绑定了两个参数 `functions` 和 `function_call` (现在更推荐用 `tools` 和 `tool_choice`): 其中前者代表了模型可以使用的工具的描述, 而后者一般是不显式指定的, 不显式指定时模型会自行决定是否调用工具还是直接回答. 如果指定了后者时, 则代表模型必然调用工具.
+
+```python
+{
+    "functions": [
+        {
+            "name": "_OutputFormatter",
+            "description": "Output formatter. Should always be used to format your response to the user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "output": {
+                        "description": "The input to the numexpr.evaluate() function.",
+                        "type": "object",
+                        "properties": {
+                            "reasoning": {
+                                "description": "The reasoning behind the code expression, including how context is included, if applicable.",
+                                "type": "string"
+                            },
+                            "code": {
+                                "description": "The simple code expression to execute by numexpr.evaluate().",
+                                "type": "string"
+                            }
+                        },
+                        "required": [
+                            "reasoning",
+                            "code"
+                        ]
+                    }
+                },
+                "required": [
+                    "output"
+                ]
+            }
+        }
+    ],
+    "function_call": {
+        "name": "_OutputFormatter"
+    }
+}
+```
+
+验证:
+
+```python
+# template | chat_llm.bind(...)
+middle_result = (runnable.first | runnable.middle[0]).invoke({"text": "1+1"})
+# AIMessage(
+#     content='',
+#     additional_kwargs={
+#         'function_call': {
+#             'arguments': '{"output":{"reasoning":"The user input is a simple addition operation.","code":"1+1"}}',
+#             'name': '_OutputFormatter'
+#         }
+#     },
+#     response_metadata={
+#         'token_usage': {
+#             'completion_tokens': 21, 'prompt_tokens': 122, 'total_tokens': 143
+#         },
+#         'model_name': 'gpt-3.5-turbo',
+#         'system_fingerprint': None,
+#         'finish_reason': 'stop',
+#         'logprobs': None
+#     },
+#     id='run-3d02b918-73ea-4c3b-bce7-ae27227498a8-0',
+#     usage_metadata={'input_tokens': 122, 'output_tokens': 21, 'total_tokens': 143}
+# )
+
+
+# runnbale.last 就是 output_parser
+runnable.last.invoke(middle_result)
+# ExecuteCode(reasoning='The user input is a simple addition operation.', code='1+1')
+```
+
 ## Cookbook
 
 ### ConversationalRetrievalChain (TODO)
@@ -2959,6 +3074,127 @@ spec = importlib.util.spec_from_file_location(module_name, module_path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 chain = getattr(module, 'chain')
+```
+
+## LangGraph (TODO: 远未完成)
+
+```
+Graph -> StateGraph -> MessageGraph
+# MessageGraph 只重载了 StateGraph 的 __init__
+
+Graph.compile(...) -> class CompiledGraph(Pregel)
+StateGraph.compile(...) -> class CompiledStateGraph(CompiledGraph)
+MessageGraph.compile(...) -> CompiledStateGraph
+```
+
+
+```python
+class Graph:
+    # 最常见的情况, node 是字符串, action 是一个 runnable
+    def add_node(node, action):
+        # 整体上是 self.nodes.append(...)
+        ...
+
+    def add_edge(self, start_key: str, end_key: str):
+        # 整体上是 self.edges.append(...)
+        ...
+
+    # source 是一个 node 的 name
+    # path 一般是一个 Callable, 返回一个 node 的 name, 输入不确定
+    def add_conditional_edges(self, source, path, path_map=None, then=None):
+        # 整体上是 self.branchs.append(...)
+        ...
+
+    # 设置起始节点
+    def set_entry_point(self, key):
+        ...
+
+    def set_conditional_entry_point(self, path, path_map=None, then=None):
+        ...
+    
+    # 设置结束节点, 不确定是否会运行这个 key
+    def set_finish_point(key):
+        ...
+
+# 参考: https://langchain-ai.github.io/langgraph/#overview
+def should_continue(messages):
+    last_message = messages[-1]
+    if not last_message.tool_calls:
+        return END
+    else:
+        return "action"
+
+workflow = MessageGraph()
+
+tools = [TavilySearchResults(max_results=1)]
+model = ChatAnthropic(model="claude-3-haiku-20240307").bind_tools(tools)
+workflow.add_node("agent", model)
+workflow.add_node("action", ToolNode(tools))
+
+workflow.set_entry_point("agent")
+
+# Conditional agent -> action OR agent -> END
+workflow.add_conditional_edges(
+    "agent",
+    should_continue,
+)
+
+# Always transition `action` -> `agent`
+workflow.add_edge("action", "agent")
+```
+
+
+StateGraph 的 docstring 中的例子:
+
+```python
+from langchain_core.runnables import RunnableConfig
+from typing_extensions import Annotated, TypedDict
+from langgraph.checkpoint import MemorySaver
+from langgraph.graph import StateGraph
+from typing import Union, Optional
+
+def reducer(a: list, b: Optional[int]) -> int:
+    if b is not None:
+        return a + [b]
+    return a
+
+class State(TypedDict):
+    x: Annotated[list, reducer]
+
+class ConfigSchema(TypedDict):
+    r: float
+
+graph = StateGraph(State, config_schema=ConfigSchema)
+
+def node(state: State, config: RunnableConfig) -> dict:
+    r = config["configurable"].get("r", 1.0)
+    print(type(state), state, state["x"])
+    x = state["x"][-1]
+    
+    next_value = x * r * (1 - x)
+    return {"x": next_value}
+
+graph.add_node("A", node)
+graph.set_entry_point("A")
+graph.set_finish_point("A")
+compiled = graph.compile()
+
+print(compiled.config_specs)
+# [ConfigurableFieldSpec(id='r', annotation=<class 'float'>, name=None, description=None, default=None, is_shared=False, dependencies=None)]
+
+step1 = compiled.invoke({"x": 0.5}, {"configurable": {"r": 3.0}})
+print(step1)
+# {'x': [0.5, 0.75]}
+print(type(step1), step1["x"])
+```
+
+输出:
+
+```
+[ConfigurableFieldSpec(id='r', annotation=<class 'float'>, name=None, description=None, default=None, is_shared=False, dependencies=None)]
+<class 'dict'> {'x': [0.5]} [0.5]
+{'x': [0.5, 0.75]}
+(langgraph.pregel.io.AddableValuesDict, [0.5, 0.75])
 ```
 
 ## Contributing
