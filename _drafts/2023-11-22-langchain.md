@@ -708,6 +708,123 @@ runnable.last.invoke(middle_result)
 # ExecuteCode(reasoning='The user input is a simple addition operation.', code='1+1')
 ```
 
+### 例子 9: tool call: AIMessage/FunctionMessage/ToolMessage
+
+参考这两篇 [https://python.langchain.com/v0.2/docs/how_to/tool_calling/](https://python.langchain.com/v0.2/docs/how_to/tool_calling/), [https://python.langchain.com/v0.2/docs/how_to/tool_results_pass_to_model/](https://python.langchain.com/v0.2/docs/how_to/tool_results_pass_to_model/)
+
+FunctionMessage/ToolMessage 代表的是工具调用的结果
+
+```python
+from langchain_core.tools import tool
+
+
+@tool
+def add(a: int, b: int) -> int:
+    """Adds a and b."""
+    return a + b
+
+
+@tool
+def multiply(a: int, b: int) -> int:
+    """Multiplies a and b."""
+    return a * b
+
+
+tools = [add, multiply]
+
+from langchain_core.pydantic_v1 import BaseModel, Field
+
+
+# Note that the docstrings here are crucial, as they will be passed along
+# to the model along with the class name.
+class Add(BaseModel):
+    """Add two integers together."""
+
+    a: int = Field(..., description="First integer")
+    b: int = Field(..., description="Second integer")
+
+
+class Multiply(BaseModel):
+    """Multiply two integers together."""
+
+    a: int = Field(..., description="First integer")
+    b: int = Field(..., description="Second integer")
+
+
+tools = [Add, Multiply]
+
+import os
+from langchain_openai import ChatOpenAI
+llm = ChatOpenAI()
+
+llm_with_tools = llm.bind_tools(tools)
+
+query = "What is 3 * 12?"
+
+message = llm_with_tools.invoke(query)  # message: AIMessage
+
+message.__fields__
+
+# {'content': ModelField(name='content', type=Union[str, List[Union[str, Dict]]], required=True),
+#  'additional_kwargs': ModelField(name='additional_kwargs', type=dict, required=False, default_factory='<function dict>'),
+#  'response_metadata': ModelField(name='response_metadata', type=dict, required=False, default_factory='<function dict>'),
+#  'type': ModelField(name='type', type=Literal['ai'], required=False, default='ai'),
+#  'name': ModelField(name='name', type=Optional[str], required=False, default=None),
+#  'id': ModelField(name='id', type=Optional[str], required=False, default=None),
+#  'example': ModelField(name='example', type=bool, required=False, default=False),
+#  'tool_calls': ModelField(name='tool_calls', type=List[ToolCall], required=False, default=[]),
+#  'invalid_tool_calls': ModelField(name='invalid_tool_calls', type=List[InvalidToolCall], required=False, default=[]),
+#  'usage_metadata': ModelField(name='usage_metadata', type=Optional[UsageMetadata], required=False, default=None)}
+
+message
+# content, additional_kwargs, response_metadata 应该是原本的大模型提供商的返回字段
+# tool_calls 和 usage_metadata 是加工为 AIMessage 时自动从 additional_kwargs, response_metadata 抽取的
+# AIMessage(
+#     content='',
+#     additional_kwargs={
+#         'tool_calls': [
+#             {
+#                 'id': 'call_20240715163333eab6ec8917a24963a9de8bac85ff5580',
+#                 'function': {'arguments': '{"a":3,"b":12}', 'name': 'Multiply'},
+#                 'type': 'function',
+#                 'index': 0
+#             }
+#         ]
+#     },
+#     response_metadata={'token_usage': {'completion_tokens': 17, 'prompt_tokens': 237, 'total_tokens': 254}, 'model_name': 'glm-4', 'system_fingerprint': None, 'finish_reason': 'tool_calls', 'logprobs': None},
+#     id='run-9c045ba1-9eed-4038-b98c-a07c483590c1-0',
+#     tool_calls=[
+#         {
+#             'name': 'Multiply',
+#             'args': {'a': 3, 'b': 12},
+#             'id': 'call_20240715163333eab6ec8917a24963a9de8bac85ff5580'
+#         }
+#     ],
+#     usage_metadata={'input_tokens': 237, 'output_tokens': 17, 'total_tokens': 254}
+# )
+
+tool_results = []
+for tool_call in message.tool_calls:
+    selected_tool = {"add": add, "multiply": multiply}[tool_call["name"].lower()]
+    tool_output = selected_tool.invoke(tool_call["args"])
+    tool_results.append(ToolMessage(tool_output, tool_call_id=tool_call["id"]))
+
+tool_results[0].__fields__
+# {'content': ModelField(name='content', type=Union[str, List[Union[str, Dict]]], required=True),
+#  'additional_kwargs': ModelField(name='additional_kwargs', type=dict, required=False, default_factory='<function dict>'),
+#  'response_metadata': ModelField(name='response_metadata', type=dict, required=False, default_factory='<function dict>'),
+#  'type': ModelField(name='type', type=Literal['tool'], required=False, default='tool'),
+#  'name': ModelField(name='name', type=Optional[str], required=False, default=None),
+#  'id': ModelField(name='id', type=Optional[str], required=False, default=None),
+#  'tool_call_id': ModelField(name='tool_call_id', type=str, required=True)}
+
+tool_results[0]
+# ToolMessage(
+#     content='36',
+#     tool_call_id='call_20240715163333eab6ec8917a24963a9de8bac85ff5580'
+# )
+```
+
 ## Cookbook
 
 ### ConversationalRetrievalChain (TODO)
