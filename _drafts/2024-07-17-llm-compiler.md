@@ -20,6 +20,8 @@ joiner -> [END, planner(replaner) + task fetching unit]  # 有条件边
 
 ## Task Fetching Unit
 
+备注: 这里用的是线程, 所以 `observations` 变量是共享的.
+
 ```python
 from concurrent.futures import ThreadPoolExecutor, wait
 import time
