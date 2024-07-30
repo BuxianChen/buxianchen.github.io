@@ -22,6 +22,24 @@ labels: [pytorch, numpy]
 - API 解释
 - 一些综合使用的例子
 
+## torch.nn.functional
+
+**KL 散度**
+
+```python
+pred = torch.tensor([[0.3, 0.7], [0.2, 0.8]])
+target = torch.tensor([[0.4, 0.6], [0.25, 0.75]])
+
+# input 必须总是取了 log 的, target 如果取了 log, log_target 应该设置为 True. target 如果不取 log(但必须归一化), 则 log_target 应设置为 False (默认值)
+# kl_div(input, target) = KL(target||input) = sum(target*log(target/input))
+# torch.nn.functional.kl_div(input, target, size_average=None, reduce=None, reduction='mean', log_target=False)
+res = F.kl_div(input=pred.log(), target=target.log(), log_target=True)  # tenor(0.0075)
+F.kl_div(pred.log(), target.log(), log_target=True, reduction="none")   # tensor([[0.1151,-0.0925],[0.0558,-0.0484]])
+
+import math
+# [0.1151,-0.0925, 0.0558,-0.0484]
+(0.4 * math.log(0.4 / 0.3), 0.6 * math.log(0.6 / 0.7), 0.25 * math.log(0.25/0.2), 0.75*math.log(0.75/0.8)) / 4  # 0.0075
+```
 
 ## torch.gather
 

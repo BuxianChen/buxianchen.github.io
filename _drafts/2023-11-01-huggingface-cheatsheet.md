@@ -1,10 +1,50 @@
 ---
 layout: post
-title: "(DEAD) huggingface cheatsheet"
+title: "(P1) huggingface cheatsheet"
 date: 2023-11-01 11:12:04 +0800
 labels: [huggingface]
 ---
 
+## DataCollator
+
+在 huggingface 的 trainer 里, dataset 一般是使用 datasets 包的 `load_dataset` 得到的 Dataset 经过 map 等方式处理. 而 dataloader 则一般是通过普通的 torch.utils.data.DataLoader 将 dataset 和这里的 datacollator 作为参数传入得到最终的 dataloader, 而 transformers 的 Model 的 forward 的输入就是 dataloader 的一个 batch
+
+### transformers.DataCollatorForLanguageModeling
+
+```python
+import torch
+from transformers import AutoTokenizer
+from transformers import DataCollatorForLanguageModeling
+
+data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+
+tokenizer = AutoTokenizer.from_pretrained("./gpt-2/")
+tokenizer.pad_token = tokenizer.eos_token
+
+import torch
+data = [
+    {
+        "input_ids": torch.tensor([1000, 1234, 5679]),
+        "attention_mask": torch.tensor([1, 1, 1]),
+        # "other_text": "text-A",  # 不允许, 必须预先删除
+    },
+    {
+        "input_ids": torch.tensor([1000, 11111, 2345, 1234, 5679]),
+        "attention_mask": torch.tensor([1, 1, 1, 1, 1]),
+        # "other_text": "text-B",  # 不允许, 必须预先删除
+    }
+]
+data_collator(data)
+
+# {
+#     'input_ids': tensor([[ 1000,  1234,  5679, 50256, 50256],
+#         [ 1000, 11111,  2345,  1234,  5679]]),
+#     'attention_mask': tensor([[1, 1, 1, 0, 0],
+#         [1, 1, 1, 1, 1]]),
+#     'labels': tensor([[ 1000,  1234,  5679,  -100,  -100],
+#         [ 1000, 11111,  2345,  1234,  5679]])
+# }
+```
 
 ## 下载模型/数据相关
 

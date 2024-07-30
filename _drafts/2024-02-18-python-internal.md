@@ -64,3 +64,94 @@ expr.value.left, expr.value.op, expr.value.right  # ast.Name, ast.Add, ast.Const
 expr.value.left.id, expr.value.left.ctx  # 'num', ast.Load
 expr.value.right.value, expr.value.right.kind  # 1, None
 ```
+
+**捕获exec执行代码的报错**
+
+辅助函数:
+
+```python
+# tcdata/__init__.py
+# Empty
+
+
+# tcdata/a.py
+from .b import bar
+
+def foo(x):
+    x = x ** 2
+    return bar(x)
+
+# tcdata/b.py
+def bar(x):
+    if x == 4:
+        raise ValueError("cannot be 4")
+    else:
+        return 1 / (x - 4)
+```
+
+主代码:
+
+```python
+# traceback_test.py
+from tcdata.a import foo
+import traceback
+import sys
+from io import StringIO
+
+
+command = """
+# This is Comment-1
+def test():
+    # This is Comment-2
+    raise ValueError("cannot test")
+x = 2
+print(f"x={x}")
+# This is Comment-3
+print(foo(x))
+"""
+
+old_stdout = sys.stdout
+sys.stdout = mystdout = StringIO()
+
+namespace = {}
+namespace.update(globals())
+try: 
+    exec(command, namespace, None)  # 如果直接传入 globals(), 则会污染, 导致后面可以打印 x
+    res = mystdout.getvalue()
+    sys.stdout = old_stdout
+except Exception as e:
+    sys.stdout = old_stdout
+    error_strs = []
+    error_strs.append("Python Code (Action Input) Execution Error")
+
+    tbs = traceback.extract_tb(e.__traceback__)
+    if tbs:
+        for tb in tbs:
+            filename, line, func, text = tb
+            if filename == "<string>":
+                try:
+                    command_text_line = command.split("\n")[line-1]
+                    error_strs.append(f"Error occurred at line {line} of the code:")
+                    error_strs.append(command_text_line)
+                except:
+                    pass
+                break
+    res = mystdout.getvalue() + "\n" + "\n".join(error_strs) + "\n" + repr(e)
+
+# print(namespace["x"])  # OK
+print(res)
+# print(x)   # Error
+```
+
+输出:
+
+```
+x=2
+
+Python Code (Action Input) Execution Error
+Error occurred at line 9 of the code:
+print(foo(x))
+ValueError('cannot be 4')
+```
+
+可以看到, 上面的代码正确定位了 `command` 中的报错行以及内容, 并且报错前的输出也进行了保留: `x=2`, 且保留 `exec` 执行时的报错 `ValueError('cannot be 4')`
