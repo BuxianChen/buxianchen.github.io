@@ -950,3 +950,25 @@ if __name__ == "__main__":
 - 在使用 `multiprocessing.Queue` 时, 涉及到的 IPC 机制是管道和锁.
 
 管道机制的效率比共享内存要低, 因为管道机制通常涉及到把数据从进程的内存复制进管道, 以及从管道中复制数据进内存. 而共享内存不存在这种复制过程.
+
+## 附录: 一些冷知识
+
+本例来源于: [https://www.bilibili.com/video/BV1PY411J7TA](https://www.bilibili.com/video/BV1PY411J7TA) 视频结尾, 以及关于 multiprocessing 的介绍
+
+```python
+import atexit
+import multiprocessing
+
+multiprocessing.set_start_method("spawn", True)  # 如果使用 spawn, 那么子进程会打印 exiting, 使用 fork 就不会打印
+# 原因是 fork 使用的是 os._exit() 这个系统调用退出的, 不在 python 解释器的控制范围内
+
+def t():
+    def f():
+        print("exiting")
+    atexit.register(f)
+
+if __name__ == "__main__":
+    p = multiprocessing.Process(target=t)
+    p.start()
+    p.join()
+```
