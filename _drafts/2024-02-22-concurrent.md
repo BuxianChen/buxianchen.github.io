@@ -44,7 +44,9 @@ except OSError as err:
 
 [https://www.geeksforgeeks.org/python-os-_exit-method/](https://www.geeksforgeeks.org/python-os-_exit-method/)
 
-`os._exit` 通常用于 `os.fork` 产生的子进程里退出子进程, 它会自动做些清理工作, 例如关闭没有被关闭的文件描述符. 如果是用于提前关闭主进程, 则需要使用 `sys.exit`
+在 python 程序中, 提前退出的方式有这么几种: `quit()`, `exit()`, `sys.exit()`, `os._exit()`, 其中前三者原理相同, 都是通过 `raise SystemExit` 来实现的, 注意 `quit` 和 `exit` 的功能完全一样, 只是函数名不同, 但它们原本都在 `site` 模块中, 并且一般情况下不需要额外 import 就能直接使用(但这一行为不能完全确保), 而 `sys.exit()` 的原理与前两者相同. 但 `os._exit()` 是直接使用的操作系统提供的系统调用, 通常用于 `os.fork` 产生的子进程里退出子进程, 它会自动做些清理工作, 例如关闭没有被关闭的文件描述符.
+
+`os._exit` 与 `sys.exit` 的微妙区别: python 有个内置模块是 `atexit`, 用于注册在程序结束时执行一些脚本, 但如果使用 `os._exit` 进行退出时, 这些脚本将不会被执行. `multiprocessing` 在 linux 上子进程的默认创建方式是 `fork`, 这种方式产生的子进程的退出方式是 `os._exit`.
 
 ### os.pipe
 
@@ -950,6 +952,128 @@ if __name__ == "__main__":
 - 在使用 `multiprocessing.Queue` 时, 涉及到的 IPC 机制是管道和锁.
 
 管道机制的效率比共享内存要低, 因为管道机制通常涉及到把数据从进程的内存复制进管道, 以及从管道中复制数据进内存. 而共享内存不存在这种复制过程.
+
+## asyncio
+
+### hello world
+
+```python
+import asyncio
+
+async def main():
+    await ayncio.sleep(1)
+    print("hello world")
+
+asyncio.run(main())
+```
+
+初看上去这个 hello world 程序有着诸多难以理解的地方:
+
+- `async def main()` 是什么
+- `await ...` 是什么
+- `async.sleep(1)` 是什么
+- `async.run(...)` 是什么
+
+TODO: 希望后面能解释清楚上面的这些问题
+
+### asyncio.run
+
+```python
+import asyncio
+
+asyncio.run(main())
+
+# 用于替换下面的写法
+# loop = asyncio.get_event_loop()
+# try:
+#     loop.run_until_complete(main())
+# finally:
+#     loop.close()
+```
+
+### async for (待厘清)
+
+一个对象能使用 `for` 语句的前提是它必须满足迭代器协议(也就是必须定义 `__iter__` 和 `__next__`, 其中 `__next__` 应该是一个普通函数, 实现迭代的语义逻辑, 也就是连续调用 `next(iter(x))` 时应该迭代整份数据, 并且在迭代完成后 `raise StopIteration`)
+
+类似地, 使用 `async for` 的前提是必须满足异步迭代器协议(也就是必须定义 `def __aiter__` 与 `async def __anext__`), 没有数据迭代时需要 `raise StopAsyncIteration`.
+
+```python
+import asyncio
+class AsyncIterator:
+    def __init__(self, start, end):
+        self.current = start
+        self.end = end
+    
+    def __aiter__(self):
+        return self
+    
+    async def __anext__(self):
+        if self.current >= self.end:
+            raise StopAsyncIteration
+        self.current += 1
+        return self.current - 1
+
+async def main():
+    async for value in AsyncIterator(0, 5):
+        print(value)
+
+asyncio.run(main())
+```
+
+注意, `async for` 是下面写法的语法糖
+
+```python
+async def main():
+    iterator = AsyncIterator(0, 5).__aiter__()
+    while True:
+        try:
+            value = await iterator.__anext__()  # 每次进入前都会 await, 意味着会交出控制权给事件循环
+        except StopAsyncIteration:
+            break
+        else:
+            # 循环体
+            print(value)
+```
+
+除了上面的做法外, `async for` 还能对 async generator 使用 (所谓 async generator, 就是在 `async def` 中使用了 `await` 和 `yield` 语句, 其中 `yield` 是为了保证它能被用于 `async for`, 而 `await` 的目的是希望 `async for` 在迭代过程中能多次交出控制权给事件循环):
+
+```python
+async def mygen(u: int = 10):
+    i = 0
+    while i < u:
+        await asyncio.sleep(0.1)  # 只有 await 会交出控制权
+        yield 2 ** i  # 此时不会交出控制权
+        i += 1
+
+async def main():
+    async for value in mygen(5):
+        print(value)
+
+asyncio.run(main())
+```
+
+### async with (待厘清)
+
+这个也是 with 语法协议的对应物, 例如:
+
+```python
+class AsyncContextManager:
+    async def __aenter__(self):
+        print("Entering context")
+        await asyncio.sleep(1)  # 模拟异步操作
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        print("Exiting context")
+        await asyncio.sleep(1)  # 模拟异步清理操作
+
+async def main():
+    async with AsyncContextManager() as manager:
+        print("Inside context")
+
+import asyncio
+asyncio.run(main())
+```
 
 ## 附录: 一些冷知识
 
