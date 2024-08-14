@@ -1075,6 +1075,22 @@ import asyncio
 asyncio.run(main())
 ```
 
+### 杂录
+
+以下代码能正常运行
+
+```python
+async def main():
+    return 1
+
+if __name__ == "__main__":
+    x = main()
+    try:
+        x.send(None)
+    except StopIteration as e:
+        print(e.value)
+```
+
 ## 附录: 一些冷知识
 
 本例来源于: [https://www.bilibili.com/video/BV1PY411J7TA](https://www.bilibili.com/video/BV1PY411J7TA) 视频结尾, 以及关于 multiprocessing 的介绍
