@@ -219,3 +219,58 @@ my_image_gen: AI画图工具,返回图片URL给用户 输入参数：[{"name": "
 - 上面的例子中流式输出是怎么实现的(vllm提供了什么,qwen-agent怎么解析流式的json格式)
 - qwen-agent 提供了哪些其他功能: 上面的只是个 demo
 
+## DEMO 解谜
+
+**`register_tool`**
+
+register 模式: 极简的 register 就像这样, `register_tool` 会略微复杂些, 但本质相同
+
+```python
+CLS_REGISTRY = dict()
+
+def register_cls(name):
+    def decorator(cls):
+        cls.name = name
+        CLS_REGISTRY[name] = cls
+        return cls
+    return decorator
+
+@register_cls(name="name_a")
+class A:
+    pass
+
+print(CLS_REGISTRY)
+```
+
+**`BaseTool`**
+
+`BaseTool` 的子类需要有 `name`, `parameters`, `description` 类属性, 并且包含一个 `call` 方法, 其中 `name` 属性可以由装饰器 `register_tool` 来赋予. 由于 `qwen_agent` 的代码组织形式, 继承自 `BaseTool` 的子类大概必须由 `register_tool` 进行装饰.
+
+
+## 其他探索
+
+代码解释器功能
+
+```python
+# TODO
+@register_tool('code_interpreter')
+class CodeInterpreter(BaseToolWithFileAccess):
+    def call(...):
+        ...
+```
+
+TODO: 这在做啥?
+
+```python
+from jupyter_client import BlockingKernelClient
+import subprocess
+
+kernel_process = subprocess.Popen("python xx.py --IPKernelApp.connection_file xx.json --matplotlib=inline --quiet")
+
+kc = BlockingKernelClient(connection_file=connection_file)
+asyncio.set_event_loop_policy(AnyThreadEventLoopPolicy())
+kc.load_connection_file()
+kc.start_channels()
+kc.wait_for_ready()
+# return kc, kernel_process
+```
