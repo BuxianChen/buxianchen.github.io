@@ -221,7 +221,7 @@ my_image_gen: AI画图工具,返回图片URL给用户 输入参数：[{"name": "
 
 ## DEMO 解谜
 
-**`register_tool`**
+### `register_tool`
 
 register 模式: 极简的 register 就像这样, `register_tool` 会略微复杂些, 但本质相同
 
@@ -242,14 +242,145 @@ class A:
 print(CLS_REGISTRY)
 ```
 
-**`BaseTool`**
+### `BaseTool`
 
 `BaseTool` 的子类需要有 `name`, `parameters`, `description` 类属性, 并且包含一个 `call` 方法, 其中 `name` 属性可以由装饰器 `register_tool` 来赋予. 由于 `qwen_agent` 的代码组织形式, 继承自 `BaseTool` 的子类大概必须由 `register_tool` 进行装饰.
+
+### function call
+
+先暂时不看 Assistant 类, 单独研究下 [qwen_agent/llm/function_calling.py](https://github.com/QwenLM/Qwen-Agent/blob/main/qwen_agent/llm/function_calling.py).
 
 
 ## 其他探索
 
-代码解释器功能
+### 代码解释器
+
+目前理解: QWen-Agent 中的代码解释器功能([qwen_agent/tools/code_interpreter.py](https://github.com/QwenLM/Qwen-Agent/blob/main/qwen_agent/tools/code_interpreter.py)) 的实现逻辑是启动一个 jupyter, 并且预先 import 好 matplotlib, numpy, pandas 等包, 然后每次由大模型写好代码后往 jupyter 里添加代码并执行, 并将运行结果 (执行结果里如果有图片的话会被捕获到并特殊处理) 作为角色为 `function` 的 message 添加到对话里. 这与 langchain 中的代码解释器的主要区别是, QWen-Agent 里的代码解释器可以使用前序步骤中定义的变量, 而 langchain 中的代码解释器每次都只能写全新的代码, 独立运行, 不能使用之前代码里的变量.
+
+#### jupyter, ipykernel, jupyter-client
+
+ipykernel 和 jupyter-client 是 jupyter 的核心组件, 安装 jupyter 时会自动装上 ipykernel 和 jupyter-client, 除此之外还会自动安装 jupyter notebook, jupyter lab 等. 但对于下面的 demo 来说, ipykernel 和 jupyter-client 已经足够. ipykernel 相当于 server 端, jupyter-client 相当于 client 端.
+
+##### demo
+
+**第一步**: 执行下面的脚本, 创建连接文件
+
+备注: 很奇怪的是目前在 QWen-Agent 的实现中似乎没有这一步, 不太确定这个连接文件从何而来
+
+```python
+from jupyter_client import KernelManager
+km = KernelManager()
+
+# 生成连接文件，并获取路径
+km.connection_file = "connection.json"
+km.write_connection_file()
+```
+
+`connection.json` 的文件内容大致如下:
+
+```json
+{
+  "shell_port": 55791,
+  "iopub_port": 43629,
+  "stdin_port": 47423,
+  "control_port": 60551,
+  "hb_port": 33619,
+  "ip": "127.0.0.1",
+  "key": "58007905-e9114700e4df9d6e74f7a027",
+  "transport": "tcp",
+  "signature_scheme": "hmac-sha256",
+  "kernel_name": "python3"
+}
+```
+
+**第二步**: 启动 kernel
+
+```python
+# start_kernel.py
+from ipykernel import kernelapp as app
+app.launch_new_instance()
+```
+
+启动方式如下, 默认在前台运行, 会占据一个终端
+
+```bash
+python start_kernel.py --IPKernelApp.connection_file=connection.json --matplotlib=inline
+```
+
+**第三步**: 连接 kernel 并执行一些命令以获取结果
+
+```python
+from jupyter_client import BlockingKernelClient
+
+# 创建客户端实例，并加载连接文件
+kc = BlockingKernelClient(connection_file="connection.json")
+kc.load_connection_file()
+kc.start_channels()
+kc.wait_for_ready()
+
+# 发送代码到内核并执行
+kc.execute("print('Hello, world!')")
+
+# 获取执行结果
+reply = kc.get_shell_msg(timeout=5)
+
+# 获取 stdout 的输出, 这个例子中的处理不完善, 如果代码执行没有输出会报错
+while True:
+    io_msg = kc.get_iopub_msg(timeout=5)
+    if io_msg['msg_type'] == 'stream' and io_msg['content']['name'] == 'stdout':
+        print(io_msg['content']['text'])
+        break
+
+# 可以继续 kc.execute(...)
+```
+
+<details>
+<summary>
+上面代码中 `reply` 的内容如下:
+</summary>
+
+```python
+{
+    'header': {
+        'msg_id': 'dc7fc97a-e66bc6bc20a4c2965b25b6b4_71700_7',
+        'msg_type': 'execute_reply',
+        'username': 'buxian',
+        'session': 'dc7fc97a-e66bc6bc20a4c2965b25b6b4',
+        'date': datetime.datetime(2024, 8, 21, 6, 25, 56, 558959, tzinfo=tzutc()),
+        'version': '5.3'
+    },
+    'msg_id': 'dc7fc97a-e66bc6bc20a4c2965b25b6b4_71700_7',
+    'msg_type': 'execute_reply',
+    'parent_header': {
+        'msg_id': '851154db-2fe3cb640e719346e8f546f2_71765_1',
+        'msg_type': 'execute_request',
+        'username': 'buxian',
+        'session': '851154db-2fe3cb640e719346e8f546f2',
+        'date': datetime.datetime(2024, 8, 21, 6, 25, 56, 542836, tzinfo=tzutc()),
+        'version': '5.3'
+    },
+    'metadata': {
+        'started': '2024-08-21T06:25:56.545541Z',
+        'dependencies_met': True,
+        'engine': '319d4b63-fce8-4473-8490-b3051b6c1edf',
+        'status': 'ok'
+    },
+    'content': {
+        'status': 'ok',
+        'execution_count': 1,
+        'user_expressions': {},
+        'payload': []
+    },
+    'buffers': []
+}
+```
+</details>
+
+##### 官方文档
+
+ipykernel 和 jupyter-client 的官方介绍
+
+#### Qwen-Agent 中的使用方式
 
 ```python
 # TODO
