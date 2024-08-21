@@ -250,6 +250,92 @@ print(CLS_REGISTRY)
 
 先暂时不看 Assistant 类, 单独研究下 [qwen_agent/llm/function_calling.py](https://github.com/QwenLM/Qwen-Agent/blob/main/qwen_agent/llm/function_calling.py).
 
+以下是自己用 vllm 部署的 Qwen 接口怎么实现与 OpenAI function call 类似的 API
+
+```python
+# OAI 大概是 OpenAI 的缩写
+from qwen_agent.llm.oai import TextChatAtOAI
+
+llm_cfg = {
+    'model': 'Qwen2-0.5B-Instruct',
+    'model_server': 'http://localhost:8000/v1',
+    'api_key': 'EMPTY',
+}
+model = TextChatAtOAI(llm_cfg)
+
+res = model.chat(
+    messages=[{"role": "user", "content": "帮我画张小狗在草地上的图片"}],
+    # 写法上与 langchain_openai 的 ChatOpenAI 有点区别
+    functions = [
+        {
+            "name": "my_image_gen",
+            "description": "AI画图工具,返回图片URL给用户",
+            "parameters": [
+                {
+                    "name": "prompt",
+                    "type": "string",
+                    "description": "期望的图像内容的详细描述,描述必须用英文描述",
+                    "required": True
+                }
+            ]
+        }
+    ],
+    stream = False
+)
+
+# res: 注意返回的结果也与 ChatOpenAI 几乎一致, 注意 arguments 是一个字符串 (json 格式转化为字典, 官方推荐用 json5 来处理)
+# [
+#     {
+#         'role': 'assistant',
+#         'content': '',
+#         'function_call': {
+#             'name': 'my_image_gen',
+#             'arguments': '{"prompt": "a cute little dog playing on the green grass"}'
+#         }
+#     }
+# ]
+```
+
+作为对比, 回顾一下 openai-python 的调用方式
+
+```python
+from openai import OpenAI
+model = OpenAI()
+res = model.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "帮我画张小狗在草地上的图片"}],
+    # 写法上与 langchain_openai 的 ChatOpenAI 有点区别
+    functions = [
+        {
+            "name": "my_image_gen",
+            "description": "AI画图工具,返回图片URL给用户",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "期望的图像内容的详细描述,描述必须用英文描述"
+                    }
+                },
+                "required": ["prompt"],
+            }
+        }
+    ],
+    stream = False
+)
+
+print(res.choices[0].message.dict())
+# {
+#     'content': None,
+#     'refusal': None,
+#     'role': 'assistant',
+#     'function_call': {
+#         'arguments': '{\n  "prompt": "A small dog on a grassy field"\n}',
+#         'name': 'my_image_gen'
+#     },
+#     'tool_calls': None
+# }
+```
 
 ## 其他探索
 
