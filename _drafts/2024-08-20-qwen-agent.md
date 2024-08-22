@@ -61,6 +61,7 @@ for r in bot.run(messages=messages):
 
 **输出**
 
+{::options parse_block_html="true" /}
 <details>
 <summary>
 详细输出
@@ -144,6 +145,7 @@ for r in bot.run(messages=messages):
 
 **vllm后台输出**
 
+{::options parse_block_html="true" /}
 <details>
 <summary>
 关键的后台原始输出
@@ -436,6 +438,7 @@ while True:
 # 可以继续 kc.execute(...)
 ```
 
+{::options parse_block_html="true" /}
 <details>
 <summary>
 上面代码中 `reply` 的内容如下:
