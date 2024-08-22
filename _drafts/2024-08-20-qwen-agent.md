@@ -63,9 +63,7 @@ for r in bot.run(messages=messages):
 
 {::options parse_block_html="true" /}
 <details>
-<summary>
-详细输出
-</summary>
+<summary>详细输出</summary>
 
 ```
 [{'role': 'assistant', 'content': '', 'function_call': {'name': 'm', 'arguments': ''}}]
@@ -147,9 +145,7 @@ for r in bot.run(messages=messages):
 
 {::options parse_block_html="true" /}
 <details>
-<summary>
-关键的后台原始输出
-</summary>
+<summary>关键的后台原始输出</summary>
 
 ```
 INFO 08-20 10:32:24 async_llm_engine.py:553] Received request cmpl-2701eb0293494b56818e18b29517c1c9: prompt: '<|im_start|>system\nYou are a helpful assistant.\n\n# 工具\n\n## 你拥有如下工具：\n\n### my_image_gen\n\nmy_image_gen: AI画图工具,返回图片URL给用户 输入参数：[{"name": "prompt", "type": "string", "description": "期望的图像内容的详细描述,注意描述必须用英文", "required": true}] 此工具的输入应为JSON对象。\n\n## 你可以在回复中插入零次、一次或多次以下命令以调用工具：\n\n✿FUNCTION✿: 工具名称，必须是[my_image_gen]之一。\n✿ARGS✿: 工具输入\n✿RESULT✿: 工具结果\n✿RETURN✿: 根据工具结果进行回复，需将图片用![](url)渲染出来<|im_end|>\n<|im_start|>user\n帮我画张小狗在草地上的图片<|im_end|>\n<|im_start|>assistant\n', params: SamplingParams(n=1, best_of=1, presence_penalty=0.0, frequency_penalty=0.0, repetition_penalty=1.0, temperature=0.7, top_p=1.0, top_k=-1, min_p=0.0, seed=None, use_beam_search=False, length_penalty=1.0, early_stopping=False, stop=['✿RESULT✿', '✿RETURN✿'], stop_token_ids=[], include_stop_str_in_output=False, ignore_eos=False, max_tokens=32583, min_tokens=0, logprobs=None, prompt_logprobs=None, skip_special_tokens=True, spaces_between_special_tokens=True, truncate_prompt_tokens=None), prompt_token_ids: [151644, 8948, 198, 2610, 525, 264, 10950, 17847, 382, 2, 83002, 98, 76813, 271, 565, 220, 56568, 103926, 104506, 102011, 48443, 14374, 847, 4954, 16322, 271, 2408, 4954, 16322, 25, 15235, 54623, 28029, 102011, 11, 31526, 45930, 3144, 89012, 20002, 69058, 32665, 5122, 58, 4913, 606, 788, 330, 40581, 497, 330, 1313, 788, 330, 917, 497, 330, 4684, 788, 330, 106076, 9370, 107553, 43815, 9370, 100700, 53481, 11, 60533, 53481, 100645, 11622, 105205, 497, 330, 6279, 788, 830, 25439, 71928, 97, 102011, 9370, 31196, 50511, 17714, 5370, 64429, 3407, 565, 220, 56568, 104964, 104787, 15946, 114731, 99822, 32571, 5373, 99796, 57191, 104183, 87752, 106167, 23031, 47872, 11622, 102011, 48443, 144575, 18149, 144575, 25, 83002, 98, 76813, 29991, 3837, 100645, 20412, 58, 2408, 4954, 16322, 60, 100653, 8997, 144575, 47483, 144575, 25, 83002, 98, 76813, 31196, 198, 144575, 14098, 144575, 25, 83002, 98, 76813, 59151, 198, 144575, 51533, 144575, 25, 51461, 117, 16038, 102011, 59151, 71817, 104787, 3837, 58362, 44063, 45930, 11622, 0, 50994, 1085, 8, 115876, 99898, 151645, 198, 151644, 872, 198, 108965, 54623, 86341, 115441, 18493, 114654, 101913, 45930, 151645, 198, 151644, 77091, 198], lora_request: None
@@ -440,9 +436,7 @@ while True:
 
 {::options parse_block_html="true" /}
 <details>
-<summary>
-上面代码中 `reply` 的内容如下:
-</summary>
+<summary>上面代码中 `reply` 的内容如下:</summary>
 
 ```python
 {
