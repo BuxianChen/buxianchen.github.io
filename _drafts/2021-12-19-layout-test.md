@@ -6,6 +6,8 @@ date: 2021-12-19 22:30:04 +0800
 
 本篇博客主要测试各类“元素”怎样被正常解析
 
+可供参考的资料: [https://yanxyz.github.io/github/github-pages/kramdown/](https://yanxyz.github.io/github/github-pages/kramdown/)
+
 
 数学公式使用的基本逻辑是使用 [MathJax](https://github.com/mathjax/MathJax)
 
