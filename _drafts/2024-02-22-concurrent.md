@@ -418,6 +418,34 @@ thread-8 {'temp': 1}
 thread-9 {'temp': 1}
 ```
 
+### GIL(待厘清, 感觉还是不理解)
+
+GIL 是 Cpython 的特性, 原因是代码被python解释器执行时, 附带了一个垃圾回收线程, python 解释器在执行一个“单元”时会预先获取全局解释器锁 GIL. 下面的代码可以验证 GIL 的存在性
+
+```python
+from threading import Thread
+import time
+
+num = 100
+
+def task():
+    global num
+    temp = num
+    num = temp - 1
+
+if __name__ == "__main__":
+    ts = []
+    for i in range(100):
+        ts.append(Thread(target=task))
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    print(num)   # 0
+```
+
+在上面的例子中, 所有的线程都会先去抢 GIL 锁, 抢到后能很快执行 `temp=num` 以及 `num=temp-1`, 然后释放 GIL 锁. 注意: GIL 会在遇到 IO 时自动释放, 然后各线程继续抢 GIL 锁
+
 ### ThreadPoolExecutor
 
 ```python
@@ -952,6 +980,70 @@ if __name__ == "__main__":
 - 在使用 `multiprocessing.Queue` 时, 涉及到的 IPC 机制是管道和锁.
 
 管道机制的效率比共享内存要低, 因为管道机制通常涉及到把数据从进程的内存复制进管道, 以及从管道中复制数据进内存. 而共享内存不存在这种复制过程.
+
+## threading vs multiprocessing
+
+### Queue
+
+Queue 与管道的关系是: `Queue = 管道 + 锁`, 也就是说在 put 和 get 时, 都是加锁的操作. 因此在使用 Queue 时, 通常不会手动使用加锁的机制
+
+使用多线程时, 应该使用 `queue.Queue`, 另外, queue 模块还提供了 LifoQueue (后进先出队列) 和 PriorityQueue (优先级队列). 备注: `threading` 模块中没有 Queue
+
+使用多进程时, 应该使用 `multiprocessing.Queue`, 但 multiprocessing 模块没有提供 后进先出队列 和 优先级队列 的标准实现. 备注: `multiprocessing.Queue` 也就是 `multiprocessing.queues.Queue`
+
+TODO: multiprocessing.JoinableQueue
+
+TODO: Queue.task_done
+
+### 守护线程 vs 守护进程
+
+```python
+from threading import Thread
+import time
+
+def task1():
+    print("task1 alive")
+    time.sleep(1)
+    print("task1 dead")
+
+def task2():
+    print("task2 alive")
+    time.sleep(2)
+    print("task2 dead")
+
+if __name__ == "__main__":
+    t1 = Thread(target=task1, daemon=True)
+    t2 = Thread(target=task2)
+    t1.start()
+    t2.start()
+    print("main")
+
+# 输出
+# task1 alive
+# task2 alive
+# main
+# task1 dead
+# task2 dead
+```
+
+如果将上面的 Thread 改成 Process
+
+输出结果则很可能是
+
+```
+main
+task2 alive
+task2 dead
+```
+
+代码执行完毕与退出是两回事，无论是多进程还是多线程，主进程/主线程代码执行完毕都会等待非守护进程/线程执行完毕后退出。
+
+- 在线程的情况下，如果主线程代码执行完毕，此时还有非守护线程在执行，那么守护线程也不会被立刻终止，守护线程在非守护线程执行完毕后才会被立刻终止。
+- 而进程的情况下，如果主进程代码执行完毕，那么守护进程程会被立刻终止，但仍须等待其他非守护进程执行完毕才会退出整个程序
+
+对上面代码的解释: 在多线程情况下, 由于创建线程开销较小, 所以在创建线程时线程可以快速先执行 `print("task1 alive")` 和 `print("task2 alive")`, 随后伴随着主线程 `print("main")` 执行完, 主线程代码执行完毕, 由于此时主进程内仍有非守护线程 t2 没有结束, 此时, 主线程在等待 t2 结束的同时, 也不会终止守护线程 t1 的执行, 接下来等到非守护线程 t2 结束后, 主线程会终止守护线程的执行, 然而此时由于 t1 等待时间较短, 在 t2 结束前已经结束.
+
+在多进程情况下, 由于创建进程开销比较大, 所以在创建进程好之前就先执行了 `print("main")`, 此时主进程代码执行完毕, 立即终止守护进程 p1, 此时 p1 还没来得及打印. 接下来主进程继续等待非守护进程 p2 执行结束.
 
 ## asyncio
 
