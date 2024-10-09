@@ -50,80 +50,6 @@ start_server()
 
 注意如果不设置 `conn.settimeout(0.1)`, 当客户端使用 `requests_client.py` 进行请求时, 在数据发送完毕时, 服务端的 `s.accept()` 会一直阻塞, 导致无法 `break`. flask/fastapi 里应该会去从请求里解析 `Content-Length` 等信息来处理 (具体机制不确定)
 
-## HTTP 协议
-
-### body 类型: text, json, form
-
-json, text, form 本质上只是 body 的内容不一样, 且请求头里的 `Content-Type` 字段有所不同, 使用 requests 库发起三种请求的方式为:
-
-```python
-import requests
-import json
-data = {"a": ["abc", "def", {"bec": 1}]}
-response = requests.post(url, data=json.dumps(data))  # text, data 是字符串类型时, 不会设置 header
-response = requests.post(url, json=data)              # json, 会自动设置 header, {"Content-Type": "application/json"}
-response = requests.post(url, data=data)              # form, data 是字典类型时, 会自动设置 header, {"Content-Type": "application/x-www-form-urlencoded"}, 这种情况下 data 不能是过于复杂的结构, 最好就是 Dict[str, str]
-```
-
-请求内容如下:
-
-**text**
-
-```
-POST /upload/ HTTP/1.1
-Host: 127.0.0.1:8000
-User-Agent: python-requests/2.31.0
-Accept-Encoding: gzip, deflate, br
-Accept: */*
-Connection: keep-alive
-Content-Length: 33
-
-{"a": ["abc", "def", {"bec": 1}]}
-```
-
-**json**
-
-```
-POST /upload/ HTTP/1.1
-Host: 127.0.0.1:8000
-User-Agent: python-requests/2.31.0
-Accept-Encoding: gzip, deflate, br
-Accept: */*
-Connection: keep-alive
-Content-Length: 33
-Content-Type: application/json
-
-{"a": ["abc", "def", {"bec": 1}]}
-```
-
-**form**
-
-```
-POST /upload/ HTTP/1.1
-Host: 127.0.0.1:8000
-User-Agent: python-requests/2.31.0
-Accept-Encoding: gzip, deflate, br
-Accept: */*
-Connection: keep-alive
-Content-Length: 17
-Content-Type: application/x-www-form-urlencoded
-
-a=abc&a=def&a=bec
-```
-
-### files
-
-注意: files 只能与表单类型数据共存
-
-```python
-files = [('file', open("a.txt", 'rb'))]
-data = {"a": "1", "b": 2}
-response = requests.post(
-    url,
-    files=files,  # header 会自动设置 {"Content-Type": "multipart/form-data ..."}
-    data=data  # 使用了 files 时, data 只能传字典 (表单类型), 而不能是字符串
-)
-```
 
 ## requests
 
@@ -256,6 +182,79 @@ Content-Type: application/json
 
 ```
 
+
+### 传参方式: text, json, form
+
+json, text, form 本质上只是 body 的内容不一样, 且请求头里的 `Content-Type` 字段有所不同, 使用 requests 库发起三种请求的方式为:
+
+```python
+import requests
+import json
+data = {"a": ["abc", "def", {"bec": 1}]}
+response = requests.post(url, data=json.dumps(data))  # text, data 是字符串类型时, 不会设置 header
+response = requests.post(url, json=data)              # json, 会自动设置 header, {"Content-Type": "application/json"}
+response = requests.post(url, data=data)              # form, data 是字典类型时, 会自动设置 header, {"Content-Type": "application/x-www-form-urlencoded"}, 这种情况下 data 不能是过于复杂的结构, 最好就是 Dict[str, str]
+```
+
+请求内容如下:
+
+**text**
+
+```
+POST /upload/ HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: python-requests/2.31.0
+Accept-Encoding: gzip, deflate, br
+Accept: */*
+Connection: keep-alive
+Content-Length: 33
+
+{"a": ["abc", "def", {"bec": 1}]}
+```
+
+**json**
+
+```
+POST /upload/ HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: python-requests/2.31.0
+Accept-Encoding: gzip, deflate, br
+Accept: */*
+Connection: keep-alive
+Content-Length: 33
+Content-Type: application/json
+
+{"a": ["abc", "def", {"bec": 1}]}
+```
+
+**form**
+
+```
+POST /upload/ HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: python-requests/2.31.0
+Accept-Encoding: gzip, deflate, br
+Accept: */*
+Connection: keep-alive
+Content-Length: 17
+Content-Type: application/x-www-form-urlencoded
+
+a=abc&a=def&a=bec
+```
+
+### 传参方式: files
+
+注意: files 只能与表单类型数据共存
+
+```python
+files = [('file', open("a.txt", 'rb'))]
+data = {"a": "1", "b": 2}
+response = requests.post(
+    url,
+    files=files,  # header 会自动设置 {"Content-Type": "multipart/form-data ..."}
+    data=data  # 使用了 files 时, data 只能传字典 (表单类型), 而不能是字符串
+)
+```
 
 ## File
 
