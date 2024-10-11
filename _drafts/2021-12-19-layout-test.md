@@ -75,3 +75,13 @@ b = "sssssssssssssssssssssssssssssssssssssss"
 
 
 [https://huggingface.co/blog/annotated-diffusion](https://huggingface.co/blog/annotated-diffusion) 有一段引用中使用 latex 公式的做法, 待研究: (1) 直接用 html 怎么写这种公式 (2) hf blog 怎么方便地写这种公式 (推测html是"编译"来的)
+
+隐藏 block 使用 markdown 语法
+
+<details markdown="1">
+<summary>代码</summary>
+
+```python
+x = 1
+```
+</details>
