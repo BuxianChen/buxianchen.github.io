@@ -381,3 +381,76 @@ print("end", rerun_id)
 参考资料:
 
 - 博客: [part-1](https://blog.streamlit.io/streamlit-authenticator-part-1-adding-an-authentication-component-to-your-app/), [part-2](https://blog.streamlit.io/streamlit-authenticator-part-2-adding-advanced-features-to-your-authentication-component/)
+
+
+## 示例
+
+### 常见错误: `session_state` 无法被修改
+
+```python
+import streamlit as st
+from uuid import uuid4
+
+RUN_ID = str(uuid4())
+print(f"RERUN {RUN_ID}: {st.session_state}")
+st.text_input("text", key="text")
+button = st.button("save")
+if button:
+    print(f"点击按钮 {RUN_ID}: {st.session_state}")
+    st.session_state["text"] = ""
+print(f"FINISH_RUN {RUN_ID}: {st.session_state}")
+```
+
+将上述代码运行起来后, 与前端交互, 先在文本输入框里输入, 一切正常, 点击按钮, 则执行报错, 后端日志如下
+
+```
+# 第一次 rerun
+RERUN bd8c35e4-60bc-4a62-b741-c1503ee37b86: {}
+FINISH_RUN bd8c35e4-60bc-4a62-b741-c1503ee37b86: {'text': ''}
+
+# 输入文本后触发 rerun
+RERUN cfd7307c-6bd1-4368-b155-a9867f0d2d15: {'text': '12'}
+FINISH_RUN cfd7307c-6bd1-4368-b155-a9867f0d2d15: {'text': '12'}
+
+# 点击按钮后触发 rerun
+RERUN 17935c8e-78af-4fa3-b28a-f807a571b21d: {'text': '12'}
+点击按钮 17935c8e-78af-4fa3-b28a-f807a571b21d: {'text': '12'}
+streamlit.errors.StreamlitAPIException: `st.session_state.text` cannot be modified after the widget with key `text` is instantiated.
+```
+
+原因是 streamlit 在组件被渲染了之后就不允许修改: 在我们点击按钮时, streamlit 会记录组件的现状, 并重新运行脚本, 当我们进入 if 分支后, 尝试对组件的值重新修改, 就会引发错误.
+
+**修正方式**
+
+```python
+import streamlit as st
+from uuid import uuid4
+
+RUN_ID = str(uuid4())
+print(f"RERUN {RUN_ID}: {st.session_state}")
+
+def button_callback():
+    print(f"点击按钮 {RUN_ID}: {st.session_state}")
+    st.session_state["text"] = ""
+
+st.text_input("text", key="text")
+button = st.button("save", on_click=button_callback)
+print(f"FINISH_RUN {RUN_ID}: {st.session_state}")
+```
+
+后端日志
+
+```
+# 第一次 rerun
+RERUN 274c2950-a3ad-4a15-b992-7291958d3cfa: {}
+FINISH_RUN 274c2950-a3ad-4a15-b992-7291958d3cfa: {'text': ''}
+
+# 输入文本后触发 rerun
+RERUN 1e371487-47cb-4daf-8e04-cfef94b09800: {'text': '12'}
+FINISH_RUN 1e371487-47cb-4daf-8e04-cfef94b09800: {'text': '12'}
+
+# 点击按钮后, 注意: 在 callback 里, RUN_ID 的值还是上一次的值, 但 rerun 之后, RUN_ID 被更新了
+点击按钮 1e371487-47cb-4daf-8e04-cfef94b09800: {'text': '12'}
+RERUN c62c4d41-213d-4d9f-aa6d-d37597360f3d: {'text': ''}
+FINISH_RUN c62c4d41-213d-4d9f-aa6d-d37597360f3d: {'text': ''}
+```
