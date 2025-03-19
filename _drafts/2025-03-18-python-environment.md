@@ -178,21 +178,73 @@ pyenv activate myenv           # 统一命令管理
 
 ## uv
 
-uv 的使用方式是(TODO)
+**安装**
 
 ```bash
 # uv 的安装, 默认安装的二进制文件是 ~/.local/bin/uv 和 ~/.local/bin/uvx
 curl -LsSf https://astral.sh/uv/install.sh | sh
+```
 
+**使用**
+
+安装 python
+
+```bash
 # 首先安装 python
-uv python install 3.10
-# 可以显示所有被 uv 安装和管理的 python 的路径, 也能发现系统级安装的 python 的路径
-# uv python list
+uv python install 3.12
+```
 
+显示可以安装/已安装的 python
+
+```bash
+# 可以显示所有被 uv 安装和管理的 python 的路径, 也能发现系统级安装的 python 的路径
+uv python list
+```
+
+输出如下:
+
+```
+cpython-3.14.0a5+freethreaded-linux-x86_64-gnu    <download available>
+cpython-3.14.0a5-linux-x86_64-gnu                 <download available>
+cpython-3.13.2+freethreaded-linux-x86_64-gnu      <download available>
+cpython-3.13.2-linux-x86_64-gnu                   <download available>
+cpython-3.12.9-linux-x86_64-gnu                   /home/buxian/.local/share/uv/python/cpython-3.12.9-linux-x86_64-gnu/bin/python3.12
+cpython-3.11.11-linux-x86_64-gnu                  <download available>
+cpython-3.10.16-linux-x86_64-gnu                  /home/buxian/.pyenv/versions/3.10.16/bin/python3.10
+cpython-3.10.16-linux-x86_64-gnu                  /home/buxian/.pyenv/versions/3.10.16/bin/python3 -> python3.10
+cpython-3.10.16-linux-x86_64-gnu                  /home/buxian/.pyenv/versions/3.10.16/bin/python -> python3.10
+cpython-3.10.16-linux-x86_64-gnu                  <download available>
+cpython-3.9.21-linux-x86_64-gnu                   <download available>
+cpython-3.8.20-linux-x86_64-gnu                   <download available>
+cpython-3.8.10-linux-x86_64-gnu                   /usr/bin/python3.8
+cpython-3.8.10-linux-x86_64-gnu                   /usr/bin/python3 -> python3.8
+cpython-3.8.10-linux-x86_64-gnu                   /bin/python3.8
+cpython-3.8.10-linux-x86_64-gnu                   /bin/python3 -> python3.8
+cpython-3.7.9-linux-x86_64-gnu                    <download available>
+pypy-3.11.11-linux-x86_64-gnu                     <download available>
+pypy-3.10.16-linux-x86_64-gnu                     <download available>
+pypy-3.9.19-linux-x86_64-gnu                      <download available>
+pypy-3.8.16-linux-x86_64-gnu                      <download available>
+pypy-3.7.13-linux-x86_64-gnu                      <download available>
+```
+
+备注: 在我的机器上, 我安装了如下 python
+
+- 系统级别的 python, 由 apt 管理, 也就是上面显示的 `/usr/bin/python3.8`
+- pyenv 管理的多个 python, 我按照上一节 pyenv 与 conda 共存的 bashrc 配置进行了配置, 并且使用了 `pyenv global 3.10` 进行了全局设置, uv 也能够找到: `/home/buxian/.pyenv/versions/3.10.16/bin/python3.10`
+- uv 管理的 python, 使用 `uv python install 3.12` 安装的: `/home/buxian/.local/share/uv/python/cpython-3.12.9-linux-x86_64-gnu/bin/python3.12`
+- conda 管理的 python, 没有体现(可能因为按我的配置, conda 安装的 python 不在 PATH 里)
+
+创建项目目录和虚拟环境
+
+```bash
 # 然后创建虚拟环境
-cd /path/to/project_dir
-# 创建一个 .venv 目录, 其中是一个 python 3.10 的虚拟环境
-uv venv -p 3.10
+mkdir project_dir
+cd project_dir
+uv init
+
+# 创建一个 .venv 目录, 使用 python 3.12 的虚拟环境 (这里存疑, 如果像我上面那种比较混乱的情形, uv, pyenv, 系统python都有的时候, 怎么确定用哪个 python)
+uv venv -p 3.12
 ```
 
 uv 管理的 python 在如下目录
