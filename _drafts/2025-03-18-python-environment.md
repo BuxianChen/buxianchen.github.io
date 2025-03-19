@@ -110,7 +110,7 @@ export PYENV_ROOT="/home/buxian/.pyenv"
 exec "/home/buxian/.pyenv/libexec/pyenv" exec "$program" "$@"
 ```
 
-因此, 本质上是通过 PATH 搜索路径的优先级, 对 `python ...` 命令进行拦截, 最终执行的是 `~/.pyenv/libexec/pyenv python ...` (与 `~/.pyenv/bin/pyenv` 是软链接关系)
+因此, 本质上是通过 PATH 搜索路径的优先级, 对 `python ...` 命令进行拦截, 最终执行的是 `~/.pyenv/libexec/pyenv python ...` (与 `~/.pyenv/bin/pyenv` 是软链接关系), 备注: `shim` 英文原意是薄垫片, 在这里相当于是用户命令 `python` 与实际的 `/path/to/python` 之间的这一层.
 
 **使用**
 
