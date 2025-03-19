@@ -30,6 +30,152 @@ pipx 会共用 ~/.local/bin 目录, 可能会导致版本冲突, pipx 本身也�
 
 conda 环境应该与 uv, pyenv 完全隔离开, 不要混用
 
+## pyenv (OK)
+
+pyenv 只负责安装和切换 python 版本, 其本身不支持创建虚拟环境的命令(可以切换 python 版本后通过 venv 命令来创建, 或者借助 `pyenv-virtualenv` 插件更方便)
+
+pyenv 与 conda 共存的方案如下:
+
+```bash
+# ~/.bashrc
+export PYENV_ROOT="$HOME/.pyenv"
+export PATH="$PYENV_ROOT/bin:$PATH"  # 先加载 pyenv 命令行工具
+eval "$(pyenv init --path)"
+
+# conda 初始化, 此步骤会将 ~/anaconda3/condabin 目录加入环境变量, 此目录仅包含 conda 可执行文件
+CONDA_PATH="$HOME/anaconda3"  # 根据实际安装路径修改
+__conda_setup="$('$CONDA_PATH/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__conda_setup"
+else
+    if [ -f "$CONDA_PATH/etc/profile.d/conda.sh" ]; then
+        . "$CONDA_PATH/etc/profile.d/conda.sh"
+    fi
+fi
+unset __conda_setup
+# 建议配置: 不要自动激活 base 环境
+# 另外也建议不要将 ~/anaconda3/bin 加入PATH: ~/anaconda3/bin 目录下会包含 conda, 但它也包含 python, 会造成污染
+conda config --set auto_activate_base false
+
+export PATH="$HOME/.local/bin:$PYENV_ROOT/shims:$PATH"
+# export PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+```
+
+**安装**
+
+```bash
+curl -fsSL https://pyenv.run | bash
+```
+
+**配置**
+
+```bash
+# ~/.bashrc 中添加以下内容:
+export PYENV_ROOT="$HOME/.pyenv"
+
+# 将 ~/.pyenv/bin 目录添加至 PATH, 此目录底下仅包含 pyenv 这个命令本身
+# 备注: ~/.pyenv/bin/pyenv 是对 ~/.pyenv/libexec/pyenv 的软链接
+[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"
+
+# 这一行会将 ~/.pyenv/shims 加入至 PATH 环境变量
+# 在后续执行了 pyenv install 3.10; pyenv install 3.11 之后
+# 此目录底下会包含 python, python3.10, python3.11, pip, pip3.10, pip3.11 等 shell 脚本
+eval "$(pyenv init - bash)"
+
+# 最终的 PATH 变量会是
+# ~/.pyenv/shims:~/.pyenv/bin
+```
+
+注意: 像 `~/.pyenv/shims/python`, `~/.pyenv/shims/pip3.10` 这种文件实际上都是 shell 脚本, 而不是对 pyenv 所安装的 `python` 二进制可执行文件的软链接, 并且这些 shell 脚本文件内容都相同, 如下:
+
+```
+[buxian@~/.pyenv/shims] (master) $ ls
+2to3       idle3.10  pip3.11    python          python3.10-config
+2to3-3.10  idle3.11  pydoc      python-config   python3.10-gdb.py
+2to3-3.11  pip       pydoc3     python3         python3.11
+idle       pip3      pydoc3.10  python3-config  python3.11-config
+idle3      pip3.10   pydoc3.11  python3.10      python3.11-gdb.py
+```
+
+文件内容如下:
+
+```bash
+#!/usr/bin/env bash
+set -e
+[ -n "$PYENV_DEBUG" ] && set -x
+
+program="${0##*/}"
+
+export PYENV_ROOT="/home/buxian/.pyenv"
+exec "/home/buxian/.pyenv/libexec/pyenv" exec "$program" "$@"
+```
+
+因此, 本质上是通过 PATH 搜索路径的优先级, 对 `python ...` 命令进行拦截, 最终执行的是 `~/.pyenv/libexec/pyenv python ...` (与 `~/.pyenv/bin/pyenv` 是软链接关系)
+
+**使用**
+
+```bash
+# 下载 python 安装包, 并安装在 ~/.pyenv/versions/3.10.16 目录下
+pyenv install 3.10
+pyenv install 3.11
+```
+
+切换 python 版本
+
+```bash
+# 将 ~/.pyenv/version 文件内容修改为 3.10
+pyenv global 3.10
+# 查看所有由 pyenv 管理的 python 以及当前 python
+pyenv versions
+#   system
+# * 3.10.16 (set by /home/buxian/.pyenv/version)
+#   3.11.8
+
+# 在当前目录下创建一个 .python_version 文件, 文件内容为 3.11, 之后在此目录及子目录下, 输入的 python 命令将会 pyenv 拦截并解释为 python 3.11.8
+pyenv local 3.11
+pyenv versions
+#   system
+#   3.10.16
+# * 3.11.8 (set by /home/buxian/wsl2_test/xx/.python-version)
+
+# 修改环境变量 PYENV_VERSION 的值为 3.10, 此设置仅对本 shell 生效 
+pyenv shell 3.10
+pyenv versions
+#   system
+# * 3.10.16 (set by PYENV_VERSION environment variable)
+#   3.11.8
+
+# 优先级: shell > local > global
+```
+
+因此, 复原方式如下:
+
+```bash
+pyenv global system
+rm .python_verison
+unset PYENV_VERSION
+```
+
+管理和切换 python 版本是 pyenv 的核心功能, pyenv 没有创建虚拟环境的命令. 但可以辅助创建虚拟环境
+
+方案一:
+
+```bash
+pyenv local 3.10.6         # 指定 Python 版本
+python -m venv .venv       # 创建虚拟环境
+source .venv/bin/activate  # 手动激活
+```
+
+方案二 (使用 `pyenv-virtualenv` 插件):
+
+```bash
+# 安装的具体细节不做展开
+
+# 使用
+pyenv virtualenv 3.10.6 myenv  # 一步创建版本+环境, 虚拟环境也在 ~/.pyenv/versions 目录下, 体验类似于 virtualenvwrapper
+pyenv activate myenv           # 统一命令管理
+```
+
 ## uv
 
 uv 的使用方式是(TODO)
@@ -59,33 +205,4 @@ uv 管理的 python 在如下目录
       - include/
       - lib/
       - share/
-```
-
-## pyenv
-
-pyenv 与 conda 共存的方案如下:
-
-```bash
-# ~/.bashrc
-export PYENV_ROOT="$HOME/.pyenv"
-export PATH="$PYENV_ROOT/bin:$PATH"  # 先加载 pyenv 命令行工具
-eval "$(pyenv init --path)"
-
-# conda 初始化
-CONDA_PATH="$HOME/anaconda3"  # 根据实际安装路径修改
-__conda_setup="$('$CONDA_PATH/bin/conda' 'shell.bash' 'hook' 2> /dev/null)"
-if [ $? -eq 0 ]; then
-    eval "$__conda_setup"
-else
-    if [ -f "$CONDA_PATH/etc/profile.d/conda.sh" ]; then
-        . "$CONDA_PATH/etc/profile.d/conda.sh"
-    fi
-fi
-unset __conda_setup
-# 建议配置: 不要自动激活 base 环境
-# 另外也建议不将 ~/anaconda3/bin 加入PATH: ~anaconda3/bin 目录下会包含 conda, 但它也包含 python, 会造成污染
-conda config --set auto_activate_base false
-
-export PATH="$HOME/.local/bin:$PYENV_ROOT/shims:$PATH"
-# export PATH="$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
