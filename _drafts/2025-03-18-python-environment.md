@@ -185,6 +185,17 @@ pyenv activate myenv           # 统一命令管理
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+**概述**
+
+uv 主要包含这几块功能
+
+- python versions (安装,管理,切换 python): `uv python install/list/find/pin/uninstall`
+- scripts: `uv run` (运行脚本), `uv add --script` (为脚本增加依赖), `uv remove --script` (为脚本减少依赖)
+- TODO
+
+注意不要使用 pip install, 要使用 uv pip install
+
+
 **使用**
 
 安装 python
