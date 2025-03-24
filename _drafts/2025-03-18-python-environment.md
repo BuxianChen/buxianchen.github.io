@@ -216,6 +216,10 @@ uv 主要包含这几块功能与相应的命令
 
 **使用**
 
+**recipe 1**
+
+使用 uv 安装合适的 python, 并且为项目创建独立的虚拟环境, 并安装项目的依赖以及依赖版本锁定
+
 安装 python
 
 ```bash
@@ -264,18 +268,6 @@ pypy-3.7.13-linux-x86_64-gnu                      <download available>
 - uv 管理的 python, 使用 `uv python install 3.12` 安装的: `/home/buxian/.local/share/uv/python/cpython-3.12.9-linux-x86_64-gnu/bin/python3.12`
 - conda 管理的 python, 没有体现(可能因为按我的配置, conda 安装的 python 不在 PATH 里)
 
-创建项目目录和虚拟环境
-
-```bash
-# 然后创建虚拟环境
-mkdir project_dir
-cd project_dir
-uv init
-
-# 创建一个 .venv 目录, 使用 python 3.12 的虚拟环境 (这里存疑, 如果像我上面那种比较混乱的情形, uv, pyenv, 系统python都有的时候, 怎么确定用哪个 python)
-uv venv -p 3.12
-```
-
 uv 管理的 python 在如下目录
 
 ```
@@ -286,4 +278,105 @@ uv 管理的 python 在如下目录
       - include/
       - lib/
       - share/
+```
+
+创建项目目录和虚拟环境
+
+```bash
+# 然后创建虚拟环境
+mkdir project_dir
+cd project_dir
+uv init
+
+# 创建一个 .venv 目录, 使用 python 3.12 的虚拟环境 (这里存疑, 如果像我上面那种比较混乱的情形, uv, pyenv, 系统 python 都有的时候, 怎么确定用哪个 python)
+uv venv -p 3.12
+```
+
+添加项目依赖
+
+```bash
+uv add requests
+```
+
+以上命令会将 requests 包安装在项目的虚拟环境中
+
+
+**recipe 2**
+
+uv 还可以用来对单个可执行 python 脚本实现环境隔离. **但不知道有什么实用场景**(为每个单独的python脚本都构建一个独立的虚拟环境)
+
+首先编写如下代码
+
+```python
+# example.py
+import requests
+from rich.pretty import pprint
+
+resp = requests.get("https://peps.python.org/api/peps.json")
+data = resp.json()
+pprint([(k, v["title"]) for k, v in data.items()][:10])
+```
+
+然后执行:
+
+```bash
+# 也可以最开始就用 uv init 初始化
+# uv init --script example.py --python 3.12
+
+# 添加 inline metadata
+uv add --script example.py 'requests<3' 'rich' --python 3.12
+
+# --no-project 在使用了 inline metadata 时是隐含参数, 可以不加
+# uv run 命令默认是在项目中使用, 而项目一般是会有独立的虚拟环境, 而这里是希望使用脚本的虚拟环境来跑脚本, 因此应该
+uv run --no-project example.py
+
+# 也可以不使用上面的 uv add --script 命令, 此处 --no-project 似乎也可以不加
+# 但这样的话就必须运行时指定: uv run --no-project --with 'requests<3,rich' --python 3.12 example.py
+
+# 疑问: --no-project 什么时候是必须加的?
+```
+
+其本质是为 `example.py` 建立了一个独立的虚拟环境, 目录如下:
+
+```bash
+uv cache dir
+# 结果通常是 ~/.cache/uv
+```
+
+此目录的结构为
+
+```
+.
+├── CACHEDIR.TAG
+├── archive-v0
+│   ├── 3GcNENOQ2bwNqiLqhYRMv  # 此目录内部为一个特定的python包
+│   ├── 4dFqn_orFfpLxsa5FL0Y2
+│   ├── 89KxbYhXVjvZqQvH6ijeK
+│   ├── B2-Hl9K-JqHkI-EF2wtnY
+│   ├── J2Tk1VZYfrGygoUmnjNkB
+│   ├── KjYBbEwa51XaoMPaLKQp0
+│   ├── TgfDzS-bKnD1TQuO2hFwN
+│   ├── V3DHmT0kTIO1nSHNLWK5M
+│   ├── W2WPPNbgxG_Het1ZY1Grj
+│   ├── WmsssfbxPd7ezeQcS01nk
+│   ├── Z_dchrNtp87GvZQvDuVko
+│   ├── fNHbvnMjGurNQ4hF5-QPI
+│   ├── foy4DxzhRuCq4zz2_7v-R
+│   ├── gl8KZA_-Orf5KfX7nBLcN
+│   ├── gnwqyFXCC9Rb7Gw5o6MN8
+│   ├── hmqP_cSR2FCsNXJVqqMwE
+│   ├── qcdzz9RyHD1AKB5AMilG5
+│   └── wfMOCRMkHwTD9_4cdHIA9
+├── builds-v0
+├── environments-v2
+│   ├── 18e5760217f69a9e
+│   ├── example-f2c1da13bd0d8822  # example.py 的虚拟环境
+│   └── x-680771d4393799f2
+├── interpreter-v4
+│   └── 746acfdb0dba2ea6
+├── sdists-v8
+├── simple-v15
+│   └── pypi
+└── wheels-v5
+    └── pypi
 ```
