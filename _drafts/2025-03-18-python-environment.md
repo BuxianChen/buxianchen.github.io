@@ -178,6 +178,7 @@ pyenv activate myenv           # 统一命令管理
 
 ## uv
 
+
 **安装**
 
 ```bash
@@ -187,13 +188,30 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 **概述**
 
-uv 主要包含这几块功能
+uv 号称一个工具支持这些能力: pip, pip-tools, pipx, poetry, pyenv, twine, virtualenv, 具体的对应关系:
 
-- python versions (安装,管理,切换 python): `uv python install/list/find/pin/uninstall`
-- scripts: `uv run` (运行脚本), `uv add --script` (为脚本增加依赖), `uv remove --script` (为脚本减少依赖)
-- TODO
+- `pip` 和 `poetry`: 在项目层面主要通过 `uv add`, `uv remove` 来实现同样的功能(严格地说,算是取代 poetry 的功能: 安装或删除相关的依赖, 并更新依赖配置文件), 在项目的虚拟环境层面主要通过 `uv pip` 来实现同样的功能.
+- `pip-tools`: `uv pip compile` 和 `uv pip sync` 用于替代 `pip-tools` 用于实现锁定依赖版本至依赖配置文件(requirements.txt等), 以及使用依赖配置文件同步虚拟环境 (严格根据requirements.txt来安装或删除虚拟环境中的依赖包)
+- `pipx`: 主要是通过 `uv tool ...` 来实现同样的功能
+- `pyenv`: 主要是通过 `uv python ...` 来实现同样的功能
+- `wheel`, `twine`: `wheel` 用于打包, `twine` 用于发布至 PyPI, 主要通过 `uv build` 和 `uv publish` 来实现同样的功能
+- `virtualenv`: 主要是通过 `uv venv` 或者 `uv run` 自动触发来实现同样的功能.
 
-注意不要使用 pip install, 要使用 uv pip install
+备注: 实际上 `poetry` 其实也包含了以上除了 `pyenv` 外几乎所有的功能.
+
+uv 主要包含这几块功能与相应的命令
+
+- **python versions (安装,管理,切换 python)**: `uv python install/list/find/pin/uninstall`
+- **scripts**: `uv run` (运行脚本), `uv add --script` (为脚本增加依赖), `uv remove --script` (为脚本减少依赖)
+  - 注意: 这里的为脚本增加/减少依赖指的是增加 [inline metadata](https://packaging.python.org/en/latest/specifications/inline-script-metadata/) 而非在项目的虚拟环境里安装相应的 python 依赖包, 也不会对 `pyproject.toml` 做修改
+- **projects (项目管理)**: 这个是最主要的功能, 主要可以替代 poetry: `uv init`, `uv add`, `uv remove`, `uv sync`, `uv lock`, `uv run`, `uv tree`, `uv build`, `uv publish`
+  - 注意: 在同一个项目内不可与 poetry 混用, 但
+- **tools (工具)**: 主要用于替代 pipx, `uvx`/`uv tool run`, `uv tool install`, `uv tool uninstall`, `uv tool list`, `uv tool update-shell`
+  - 注意: `uv tool` 不要与 pipx 混用(同一个用户不可混用), pipx 对工具 (例如 black, ruff 等) 都安装在 ~/.local/bin 目录下
+- **pip interface**: `uv venv`, `uv pip install/uninstall/list/show/tree/check/freeze/compile/sync`
+  - 切记不要使用激活虚拟环境 `source .venv/bin/activate` + `pip install`, 而要使用 `uv pip install`, 因为使用 `uv venv` 得到的虚拟环境的 bin 目录 `.venv/bin` 底下不包含 pip 可执行脚本, 因此激活虚拟环境不能使用任何与 pip 有关的内容
+  - `uv add xxx` 与 `uv pip install xxx` 的区别是前者会将依赖写入 pyproject.toml, 而后者不会修改. 因此 uv 的 pip interface 适合临时试验.
+- **utility**: `uv cache clean/prune`, `uv cache dir`, `uv tool dir`, `uv python dir`, `uv self update`
 
 
 **使用**
