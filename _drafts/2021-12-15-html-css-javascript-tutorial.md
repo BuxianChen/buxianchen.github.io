@@ -112,6 +112,211 @@ Content-Type: application/xml
 
 更复杂的机制例如先发请求头给目标源, 目标源返回允许的操作, 然后请求方再发送真正的请求, 目标源再返回数据. 此处从略, 请参考: [MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS), 而 FastAPI 中怎么使用这一机制参考 [FastAPI](https://fastapi.tiangolo.com/tutorial/cors/).
 
+**实例解释**
+
+后端使用 flask 实现
+
+```python
+from flask import Flask, request, jsonify
+from flask_cors import CORS  # type: ignore
+
+app = Flask(__name__)
+
+
+@app.before_request
+def log_request():
+    """打印原始 HTTP 请求信息"""
+    print("\n--- Incoming Request ---")
+    print(f"{request.method} {request.url}")
+    print("Headers:")
+    for header, value in request.headers.items():
+        print(f"{header}: {value}")
+    print("Body:")
+    print(request.get_data(as_text=True))  # 打印请求体
+
+@app.after_request
+def log_response(response):
+    """打印原始 HTTP 响应信息"""
+    print("\n--- Outgoing Response ---")
+    print(f"Status: {response.status}")
+    print("Headers:")
+    for header, value in response.headers.items():
+        print(f"{header}: {value}")
+    print("Body:")
+    print(response.get_data(as_text=True))  # 打印响应体
+    return response
+
+@app.route("/api/post_example", methods=["POST"])
+def post_example():
+    """Handle POST requests."""
+    data = request.json  # 获取 JSON 数据
+    return jsonify({"message": "Data received successfully", "received_data": data}), 200
+
+# 注意, 必须再 app.before_request 和 app.after_request 后使用 CORS 包装, 才能在后端日志里看出 OPTIONS 请求的区别, 但不影响整体的功能
+CORS(app)  # 启用 CORS 或不启用, 观察前后端的输出
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5010, debug=True)
+```
+
+前端页面
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>POST Request Example</title>
+    <script>
+        async function sendPostRequest() {
+            const url = "http://localhost:5010/api/post_example"; // 后端 API 地址
+            const data = { key: "value", example: "test" }; // 要发送的 JSON 数据
+
+            try {
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json", // 设置请求头
+                    },
+                    body: JSON.stringify(data), // 转换为 JSON 字符串
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log("Response:", result);
+                    document.getElementById("response").innerText = JSON.stringify(result, null, 2);
+                } else {
+                    console.error("Error:", response.statusText);
+                }
+            } catch (error) {
+                console.error("Request failed:", error);
+            }
+        }
+    </script>
+</head>
+<body>
+    <h1>POST Request Example</h1>
+    <button onclick="sendPostRequest()">Send POST Request</button>
+    <pre id="response"></pre>
+</body>
+</html>
+```
+
+不启用 CORS 时, 前端调用完 OPTIONS 后将不会调用 POST, 页面上也就没有内容, 而后端日志如下:
+
+```
+--- Incoming Request ---
+OPTIONS http://localhost:5010/api/post_example
+Headers:
+Host: localhost:5010
+Connection: keep-alive
+Accept: */*
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: content-type
+Origin: null
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0
+Sec-Fetch-Mode: cors
+Sec-Fetch-Site: cross-site
+Sec-Fetch-Dest: empty
+Accept-Encoding: gzip, deflate, br, zstd
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6
+Body:
+
+
+--- Outgoing Response ---
+Status: 200 OK
+Headers:
+Content-Type: text/html; charset=utf-8
+Allow: OPTIONS, POST
+Body:
+
+127.0.0.1 - - [09/Jun/2025 16:31:05] "OPTIONS /api/post_example HTTP/1.1" 200 -
+```
+
+启用 CORS 时, 前端将先调用 OPTIONS, 再调用 POST, 页面上将正常显示内容, 而后端日志如下:
+
+```
+--- Incoming Request ---
+OPTIONS http://localhost:5010/api/post_example
+Headers:
+Host: localhost:5010
+Connection: keep-alive
+Accept: */*
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: content-type
+Origin: null
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0
+Sec-Fetch-Mode: cors
+Sec-Fetch-Site: cross-site
+Sec-Fetch-Dest: empty
+Accept-Encoding: gzip, deflate, br, zstd
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6
+Body:
+
+
+--- Outgoing Response ---
+Status: 200 OK
+Headers:
+Content-Type: text/html; charset=utf-8
+Allow: POST, OPTIONS
+Access-Control-Allow-Origin: null
+Access-Control-Allow-Headers: content-type
+Access-Control-Allow-Methods: DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT
+Vary: Origin
+Body:
+
+127.0.0.1 - - [09/Jun/2025 16:29:52] "OPTIONS /api/post_example HTTP/1.1" 200 -
+
+--- Incoming Request ---
+POST http://localhost:5010/api/post_example
+Headers:
+Host: localhost:5010
+Connection: keep-alive
+Content-Length: 32
+Sec-Ch-Ua-Platform: "Windows"
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36 Edg/137.0.0.0
+Sec-Ch-Ua: "Microsoft Edge";v="137", "Chromium";v="137", "Not/A)Brand";v="24"
+Content-Type: application/json
+Sec-Ch-Ua-Mobile: ?0
+Accept: */*
+Origin: null
+Sec-Fetch-Site: cross-site
+Sec-Fetch-Mode: cors
+Sec-Fetch-Dest: empty
+Accept-Encoding: gzip, deflate, br, zstd
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6
+Body:
+{"key":"value","example":"test"}
+
+--- Outgoing Response ---
+Status: 200 OK
+Headers:
+Content-Type: application/json
+Content-Length: 114
+Access-Control-Allow-Origin: null
+Vary: Origin
+Body:
+{
+  "message": "Data received successfully",
+  "received_data": {
+    "example": "test",
+    "key": "value"
+  }
+}
+
+127.0.0.1 - - [09/Jun/2025 16:29:52] "POST /api/post_example HTTP/1.1" 200 -
+```
+
+**加与不加 CORS 后端返回内容的关键处:** 加上了 CORS 后, 后端的 response header 多出了这些内容:
+
+```
+Access-Control-Allow-Origin: null
+Access-Control-Allow-Headers: content-type
+Access-Control-Allow-Methods: DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT
+Vary: Origin
+```
+
 ## HTML
 
 ### tutorial
