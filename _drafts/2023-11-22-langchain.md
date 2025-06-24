@@ -3195,6 +3195,8 @@ chain = getattr(module, 'chain')
 
 ## LangGraph (TODO: 远未完成)
 
+新开博客完成 ...
+
 ```
 Graph -> StateGraph -> MessageGraph
 # MessageGraph 只重载了 StateGraph 的 __init__
