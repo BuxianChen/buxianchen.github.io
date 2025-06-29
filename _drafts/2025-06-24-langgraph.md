@@ -10,6 +10,25 @@ labels: [langchain,langgraph]
 - langgraph 源码阅读
 - langgraph 使用, 并以此了解一些 fancy 的 Agent 实现
 
+## 疑惑
+
+Pregel 的 `__init__` 函数的参数里有如下类型注解:
+
+```python
+def __init__(
+    self,
+    *,
+    nodes: dict[str, PregelNode | NodeBuilder],
+    channels: dict[str, BaseChannel | ManagedValueSpec] | None,
+    ...
+):
+    ...
+```
+
+这里的 ManagedValueSpec 有什么作用, 为什么和 BaseChannel 并列. 同样的疑惑在看 StateGraph.add_node 调用到的 `langgraph.graph.state._get_channel` 方法也有类似的并列关系
+
+ManagedValueSpec 表示的是继承自 ManagedValue 的类, 也就是 `langgraph.managed.IsLastStepManager` 和 `langgraph.managed.RemainingStepsManager` 这两个.
+
 ## 源码目录
 
 ## Pregel
