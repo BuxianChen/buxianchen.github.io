@@ -492,6 +492,40 @@ print(f"total time: {end_time - start_time}s")
 total time: 7.008014678955078s
 ```
 
+### threading.local
+
+threading.local 用于为每个线程设置自己的私有值, 不同线程不共享. 在代码写法上, 像是在用全局变量
+
+```python
+import threading
+import time
+import random
+
+local_data = threading.local()
+
+def worker(thread_id):
+    t = random.random()
+    local_data.value = f"Thread {thread_id} setting data: {t}"
+    time.sleep(t)
+    print(f"[Thread {thread_id} read] {local_data.value}")
+
+n = 5
+ts = []
+for i in range(n):
+    ts.append(threading.Thread(target=worker, args=(i,)))
+for i in range(n):
+    ts[i].start()
+for i in range(n):
+    ts[i].join()
+
+# 可以看到每个线程读取的都是它自己设置的私有值
+# [Thread 0 read] Thread 0 setting data: 0.14037306397403715
+# [Thread 3 read] Thread 3 setting data: 0.5426007168896825
+# [Thread 4 read] Thread 4 setting data: 0.5997684976764723
+# [Thread 2 read] Thread 2 setting data: 0.6010571379303268
+# [Thread 1 read] Thread 1 setting data: 0.6663547889407234
+```
+
 ## multiprocessing
 
 ### Lock
@@ -981,7 +1015,6 @@ if __name__ == "__main__":
 
 管道机制的效率比共享内存要低, 因为管道机制通常涉及到把数据从进程的内存复制进管道, 以及从管道中复制数据进内存. 而共享内存不存在这种复制过程.
 
-## threading vs multiprocessing
 
 ### Queue
 
@@ -1167,6 +1200,36 @@ import asyncio
 asyncio.run(main())
 ```
 
+### contextvars.ContextVar
+
+contextvars.ContextVar 用于设置协程中每个 task 的私有变量. 注意这个东西专用于协程任务的私有变量, 不同任务可能会使用同一线程, 所以不能用 threading.local
+
+```python
+import threading
+import random
+import asyncio
+from contextvars import ContextVar
+
+local_data = threading.local()
+context_var = ContextVar("context_var")
+
+
+async def coro(coro_id):
+    t = random.random()
+    # local_data.value = f"coro {coro_id} setting data: {t}"
+    context_var.set(f"coro {coro_id} setting data: {t}")
+    print(f"coro {coro_id} sleep {t}")
+    await asyncio.sleep(t)
+    # return local_data.value
+    return context_var.get()
+
+async def main():
+    return await asyncio.gather(*[coro(i) for i in range(5)])
+
+res = asyncio.run(main())
+print(res)
+```
+
 ### 杂录
 
 以下代码能正常运行
@@ -1182,6 +1245,14 @@ if __name__ == "__main__":
     except StopIteration as e:
         print(e.value)
 ```
+
+## 总述
+
+### 私有变量
+
+代码写法上像是引用全局变量, 但实际上是线程或协程任务内私有变量. 这种用法在多线程情形下是 `threading.local`, 在协程情况下是 `contextvars.ContextVar`, 在进程情况下直接使用 `global` 关键字.
+
+### 共享变量
 
 ## 附录: 一些冷知识
 
