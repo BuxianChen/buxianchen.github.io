@@ -46,6 +46,7 @@ gpg2 --keyserver keyserver.ubuntu.com --recv-keys 409B6B1796C275462A1703113804BB
 curl -sSL https://get.rvm.io | bash -s stable
 
 # 参考: https://stackoverflow.com/questions/75452016/installation-messed-up-with-ruby-unable-to-install-jekyll
+# 在 WSL ubuntu 24.04 上, 建议安装 3.2.2 版本
 rvm install 2.7
 rvm use 2.7.2 --default
 rvm -v
