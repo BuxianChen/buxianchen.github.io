@@ -25,9 +25,31 @@ es = model.infer(tokenizer, prompt=prompt, image_file=image_file, output_path = 
 ```
 
 
-### SAM
+## SAM
 
-#### 目录结构
+### 整体流程
+
+**输入**
+
+(1) 图片: 原始形状大小可以任意
+(2) prompt: 可以有如下几种
+(2.1) 最常见的一种: 指示需要分割出来的物体的关键点以及标签(0/1, 0标识改关键点不属于该物体,1标识该关键点属于该物体, 默认为1);
+(2.2) 物体所在的大致 bounding box
+(2.3) 初步的 mask
+
+**输出**
+
+0/1 mask, 1 标识该像素点属于该物体, 0 表示不属于
+
+备注: 假设需要同时对多张图片识别多个不同物体的 mask, 做批量推理时必须保证每个物体的 prompt 结构相同, 例如每个物体都仅用一个关键点进行指示
+
+**具体流程**
+
+- 预处理: 先将图片长边对齐到1024,然后normalize(先除以255,然后减均值,除以方差),在右下角做padding,直至对其1024, 关键点/bounding box/mask也相应放缩处理好
+- 模型: 输出 iou_scores: (B, N, K), pred_masks: (B, N, K, 256, 256), K=4, 其中 iou_scores 的取值是正负浮点数, 用于指示分割结果的置信度, pred_masks 用于指示每个物体具体的 mask. 针对每个物体 SAM 会输出 4 个结果, 其中第 0 个结果是可以直接使用的默认结果, 而第 1, 2, 3 个结果存在递进关系: 例如指示点位于车门把手上, 第 1 个结果的 mask 是车把手, 第 2 个结果的 mask 是车门, 第 3 个结果的 mask 是整辆车.
+- 后处理: 将 mask 按比例恢复至原图尺寸, 输出结果
+
+### 目录结构
 
 (1) transformers 的 `transformers/models/sam` 目录文件如下:
 
@@ -72,7 +94,7 @@ MODEL_CARD_NAME = "modelcard.json"
 # https://huggingface.co/docs/transformers/v4.57.1/en/model_doc/dia#transformers.DiaProcessor
 ```
 
-#### Processor
+### Processor
 
 **SamImageProcessor**
 
@@ -125,9 +147,6 @@ ProcessorMixin(PushToHubMixin)
 SamProcessor(ProcessorMixin)
 - __call__: 重写了父类的方法
 ```
-
-
-
 
 
 
@@ -349,7 +368,8 @@ V: (B, N, 5+P+1, 256)
 TODO: 卷积与反卷积的理解
 
 
-## 模型整体流程
+### 模型整体流程
+
 
 按 huggingface 中 SamModel 的 forward 函数来看:
 
@@ -378,18 +398,4 @@ attention_similarity: Optional[torch.FloatTensor] = None
 target_embedding: Optional[torch.FloatTensor] = None
 ```
 
-```
-images: [(H, W, 3)]*B, B张图片, 大小可以任意
-
-# points 和 labels 必须配对
-points: (B, N, P, 2), 每张图片有N个物体,每个物体用P个点进行提示
-labels: (B, N)  # -1, 0, 1, -10
-
-boxes: (B, N, 4), 每张图片的N个物体用 x1, y1, x2, y2 来指示左上角和右下角
-masks: (B, 1, 256, 256)  这个输入很奇怪, 代表什么提示, 并且这个输入数据是浮点数类型, 并且也不能传 N 个进去
-
-attention_similarity
-target_embedding
-
-```
 

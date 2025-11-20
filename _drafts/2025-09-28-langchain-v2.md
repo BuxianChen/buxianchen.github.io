@@ -9,7 +9,11 @@ labels: [langchain,langgraph,langsmith,langgraph-platform]
 
 主要看 langsmith, langgraph-platform 相关内容, 也看一些关于 langchain/langgraph 的新内容
 
-## langsmith: Tracer
+## langchain v1 生态及代码整体分布
+
+
+
+## langsmith: Tracer 底层实现
 
 用法可参考官方文档
 
@@ -115,3 +119,134 @@ class RunTree(ls_schemas.RunBase):
         return self.ls_client
 ```
 
+## langgraph: add_messages
+
+### 特殊行为: RemoveMessage
+
+left 是 state 的现有的 message, 里面必然不包含 RemoveMessage, 每次合并后的结果里也不会包含 RemoveMessage, 也就是 RemoveMessage 只有可能出现在 right 中
+
+```python
+from langgraph.graph.message import add_messages, REMOVE_ALL_MESSAGES
+from langchain_core.messages import HumanMessage, AIMessage, RemoveMessage
+
+left = [
+    HumanMessage("x", id="1"),
+    AIMessage("y", id="2")
+]
+
+# RemoveMessage + id=REMOVE_ALL_MESSAGES, 则只保留 right 在最后一个 REMOVE_MESSAGE 之后的内容
+# PR: 感觉源码这里应该再做一次检查, 确保之后没有其他 id 为非 REMOVE_ALL_MESSAGES 的 REMOVE_MESSAGE
+# 输出: w 4;
+right1 = [
+    HumanMessage("z", id="3"),
+    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+    AIMessage("w", id="4")
+]
+
+# 删除前边的某条 message, 可以是 left, 也可以是 right 中的 message
+# 输出: y 2; z 3; w 4;
+right2 = [
+    HumanMessage("z", id="3"),
+    RemoveMessage(id="1"),
+    AIMessage("w", id="4")
+]
+
+# id 与之前的重复, 则覆盖之前的 message
+# 输出: z 1; y 2; w 4;
+right3 = [
+    HumanMessage("z", id="1"),
+    AIMessage("w", id="4")
+]
+
+# 覆盖和删除同时出现, 则按逻辑顺序执行
+# 输出: y 2; w 4;
+right4 = [
+    HumanMessage("z", id="1"),
+    RemoveMessage(id="1"),
+    AIMessage("w", id="4")
+]
+
+for right in [right1, right2, right3, right4]:
+    add_messages(left, right)
+```
+
+#### 例子
+
+```python
+from langchain.agents import create_agent
+from langchain.agents.middleware import SummarizationMiddleware
+from langchain_openai import ChatOpenAI
+
+model = ChatOpenAI(model="gpt-5-mini")
+
+agent = create_agent(
+    model=model,
+    middleware=[
+        SummarizationMiddleware(
+            model=model,
+            messages_to_keep=2,
+            max_tokens_before_summary=200
+        ),
+    ],
+)
+
+result = agent.invoke(
+    {
+        "messages": [
+            {"role": "user", "content": "Explain machine learning"*100},
+            {"role": "assistant", "content": "something"},
+            {"role": "user", "content": "why i need it" * 100},
+        ]
+    },
+)
+```
+
+Middleware 一般只适用于 `create_agent` 接口, 其本质是将 `middleware.before_model` 之类的方法作为节点连在 graph 中. 注意到 SummarizationMiddleware 的 return 结果为:
+
+```python
+return {
+    "messages": [
+        RemoveMessage(id=REMOVE_ALL_MESSAGES),
+        *new_messages,
+        *preserved_messages,
+    ]
+}
+```
+
+而普通的 ChatOpenAI 的 invoke 方法实际上不支持这种特殊的 RemoveMessage. 并且在 `create_agent` 得到的 graph 的 state 中, messages 字段的 reducer 是被标记为了 `add_messages` 的. 因此真正的执行逻辑是:
+
+- 执行 `SummarizationMiddleware.before_model`: 有可能执行后返回上面的 RemoveMessage
+- 做状态更新: `add_messages(left, right)`, 此时 `right` 的实参为上面的返回结果, 这里有特殊逻辑: 直接返回 `right` RemoveMessage 之后的 message
+- 执行模型
+
+## langchain_core: `BaseMessage`
+
+- BaseMessage
+- AIMessage
+- HumanMessage
+- ChatMessage
+- SystemMessage
+- FunctionMessage
+- ToolMessage
+- AIMessageChunk
+- ...
+
+```python
+class BaseMessage:
+    content: str | list[str | dict]
+    additional_kwargs: dict = Field(default_factory=dict)
+    response_metadata: dict = Field(default_factory=dict)
+    type: str
+    name: str | None = None
+    id: str | None = Field(default=None, coerce_numbers_to_str=True)
+
+```
+
+## langchain_core: `trim_messages`
+
+langchain_core.messages.utils.convert_to_messages
+- trim_messages 有用到
+- add_messages 有用到
+
+langchain_core.messages.utils.convert_to_openai_messages
+- add_messages 有用到
