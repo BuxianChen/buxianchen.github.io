@@ -380,3 +380,10 @@ uv cache dir
 └── wheels-v5
     └── pypi
 ```
+
+## pdm
+
+文档: [https://pdm-project.org/en/latest](https://pdm-project.org/en/latest/)
+
+|项目|管理工具|说明|
+|[langgenius/dify-plugin-sdks](https://github.com/langgenius/dify-plugin-sdks/tree/61c7481a31bde7662a76542e1f6f560252173f08/python)|pdm,uv|待确认是使用uv作为backend的pdm,还是pdm迁移到uv|
