@@ -27,6 +27,91 @@ es = model.infer(tokenizer, prompt=prompt, image_file=image_file, output_path = 
 
 ## SAM
 
+### Demo
+
+后面将主要基于下面的例子:
+
+输入的图片是 1764 x 2646 大小, 输入模型前会将其长边放缩到 1024 并在右/下部分padding, 模型输入的图片维度是 1024x1024, 而模型输出的 mask 是 (B, N, 3, 256, 256). 其中 B=1 是图片数量, N=2 是需要检测的物体数. 也就是说模型输出的 mask 的长/宽是要输入大小的 1/4.
+
+- B: `batch_size`, 图片数量
+- N: `point_batch_size`: 物体数量, 每个图片中有 N 个物体
+- P: `num_points_per_image`: 每个物体用 P 个点做标识
+
+```python
+import torch
+from PIL import Image
+import requests
+from transformers import SamModel, SamProcessor
+from transformers import AutoImageProcessor, AutoProcessor
+import torch
+import os
+
+model_name_or_path = "facebook/sam-vit-huge"
+# model_name_or_path = "./sam-vit-huge"
+model = SamModel.from_pretrained(model_name_or_path)
+processor = SamProcessor.from_pretrained(model_name_or_path)
+
+img_url = "https://huggingface.co/ybelkada/segment-anything/resolve/main/assets/car.png"
+raw_image = Image.open(requests.get(img_url, stream=True).raw).convert("RGB")
+
+input_points = [[
+    [
+        [450, 600],
+        [460, 600],
+        [470, 600]
+    ],
+    [
+        [900, 600],
+        [910, 600],
+        [920, 600]
+    ],
+]]
+# B=1, N=2, P=3. 实际上分别指向图片中左边和右边的窗户
+# B: 图片数量, N: 每个图片中的物体数量, P: 每个物体的参考点数量, 2: x与y
+# [B, N, P, 2] -> [B, N, P, 2]
+
+inputs = processor(
+    raw_image,
+    input_points=input_points,
+    return_tensors="pt"
+)
+
+with torch.no_grad():
+    outputs = model(**inputs)
+# outputs.iou_scores: (1, 2, 3), 也就是: (B, N, 3), 这里的 3 是因为 sam 默认会为每个物体生成 3 个 mask, 应对歧义的情况, iou_scores TODO: 代表着对该 mask 结果的预测置信度?
+# outputs.pred_masks: (1, 2, 3, 256, 256), 浮点数, 也就是: (B, N, 3, 256, 256)
+
+# post_process_masks 实际做的事情是把模型输出的 outputs.pred_masks 放缩回原始尺寸
+# 然后根据该像素位置的值来判断是否为物体: 大于0.0则为物体,小于0.0则不是物体
+masks = processor.image_processor.post_process_masks(
+    outputs.pred_masks.cpu(), inputs["original_sizes"].cpu(), inputs["reshaped_input_sizes"].cpu()
+)
+# masks: list[tensor], masks[0] 是 bool 型 tensor, False 表示不是物体, True 表示物体区域
+# len(masks) = 1 = B
+# masks[0].shape = (2, 3, 1764, 2646) = (N, 3, H, W)
+
+scores = outputs.iou_scores
+
+# 把预测 mask 输出为图片
+os.makedirs("output_masks", exist_ok=True)
+for mask_idx, mask in enumerate(masks):
+    N, three, _, _ = mask.shape
+    for i in range(N):
+        for j in range(three):
+            img = mask[i, j].cpu().numpy().astype("uint8") * 255
+            img = Image.fromarray(img)
+            img.save(f"output_masks/image_{mask_idx}_object_{i}_result_{j}.png")
+
+# 输出的mask的展示
+# image_0_object_0_result_0.png  -> 左侧窗户
+# image_0_object_0_result_1.png  -> 两侧窗户
+# image_0_object_0_result_2.png  -> 整个车子
+# image_0_object_0_result_0.png  -> 右侧窗户
+# image_0_object_0_result_1.png  -> 两侧窗户
+# image_0_object_0_result_2.png  -> 整个车子
+```
+
+
 ### 整体流程
 
 **输入**
@@ -74,6 +159,26 @@ preprocessor_config.json  # 是 image_processor 的默认配置文件名
 tf_model.h5
 ```
 
+### Processor: huggingface
+
+TODO: processor, image_processor, base/concrete 的关系
+
+
+
+```mermaid
+classDiagram
+    class PushToHubMixin {
+    }
+    class processing_utils.ProcessorMixin {
+    }
+    class models.sam.processing_sam.SamProcessor {
+    }
+
+
+    PushToHubMixin <|-- processing_utils.ProcessorMixin
+    processing_utils.ProcessorMixin <|-- models.sam.processing_sam.SamProcessor
+```
+
 ```python
 # transformers.utils.__init__.py
 WEIGHTS_NAME = "pytorch_model.bin"
@@ -88,15 +193,25 @@ AUDIO_TOKENIZER_NAME = "audio_tokenizer_config.json"  # audio, audio_tokenizer, 
 PROCESSOR_NAME = "processor_config.json"   # 综合 tokenizer, image_processor, video_processor, feature_extractor
 GENERATION_CONFIG_NAME = "generation_config.json"
 MODEL_CARD_NAME = "modelcard.json"
-# 注意 audio 和 video 是默认用同样的配置文件名
+# 注意 audio 和 image 是默认用同样的配置文件名
 
 # audio_tokenizer 目前用的很少, 仅见于
 # https://huggingface.co/docs/transformers/v4.57.1/en/model_doc/dia#transformers.DiaProcessor
 ```
 
-### Processor
 
-**SamImageProcessor**
+```
+# transformers.processing_utils.py
+ProcessorMixin(PushToHubMixin)
+- __call__: 默认实现是使用 self.tokenizer, self.image_processor, self.video_processor, self.feature_extractor 分别处理各个模态的输入
+- from_pretrained
+- save_pretrained
+- ...
+
+SamProcessor(ProcessorMixin)
+- __call__: 重写了父类的方法
+```
+
 
 ```
 PushToHubMixin
@@ -136,19 +251,9 @@ SamImageProcessor(BaseImageProcessor)
 ```
 
 
-```
-# transformers.processing_utils.py
-ProcessorMixin(PushToHubMixin)
-- __call__: 默认实现是使用 self.tokenizer, self.image_processor, self.video_processor, self.feature_extractor 分别处理各个模态的输入
-- from_pretrained
-- save_pretrained
-- ...
+### SamProcessor, SamImageProcessor
 
-SamProcessor(ProcessorMixin)
-- __call__: 重写了父类的方法
-```
-
-
+明白了继承关系后, 我们具体看一下 SamProcessor 和 SamImageProcessor
 
 ```python
 from PIL import Image
@@ -202,104 +307,8 @@ SAM 在上述处理的实际过程是:
 关于 `input_points` 的进一步说明: `input_points` 可以传 3 维或者 4 维, 传 3 维的情况就是每张图片只要检测一个目标(但目标可以用多个点来标记)
 
 
-```python
-# 接着前面的代码
-# inputs: pixel_values, original_sizes, reshaped_input_sizes, input_points
-with torch.no_grad():
-    outputs = model(**inputs)
+### TODO: 将这些解释融入到后续章节
 
-# outputs.iou_scores: (B, N, 3), 这里的这个 3 好像就是固定值, 3 个结果
-# outputs.pred_masks: 浮点数: (B, N, 3, 256, 256)
-masks = processor.image_processor.post_process_masks(
-    outputs.pred_masks.cpu(), inputs["original_sizes"].cpu(), inputs["reshaped_input_sizes"].cpu()
-)
-# len(masks) = B, type(masks) == list
-# masks[0].shape = (N, 3, H, W)
-scores = outputs.iou_scores
-```
-
-
-
-**一个完整的例子**
-
-下面的例子中:
-
-输入的图片是 1764 x 2646 大小, 输入模型前会将其长边放缩到 1024 并在右/下部分padding, 模型输入的图片维度是 1024x1024, 而模型输出的 mask 是 (B, N, 3, 256, 256). 其中 B=1 是图片数量, N=2 是需要检测的物体数. 也就是说模型输出的 mask 的长/宽是要输入大小的 1/4.
-
-- B: `batch_size`, 图片数量
-- N: `point_batch_size`: 物体数量, 每个图片中有 N 个物体
-- P: `num_points_per_image`: 每个物体用 P 个点做标识
-
-```python
-import torch
-from PIL import Image
-import requests
-from transformers import SamModel, SamProcessor
-from transformers import AutoImageProcessor, AutoProcessor
-import torch
-import os
-
-model_name_or_path = "facebook/sam-vit-huge"
-model_name_or_path = "./sam-vit-huge"
-model = SamModel.from_pretrained(model_name_or_path)
-processor = SamProcessor.from_pretrained(model_name_or_path)
-
-img_url = "https://huggingface.co/ybelkada/segment-anything/resolve/main/assets/car.png"
-raw_image = Image.open(requests.get(img_url, stream=True).raw).convert("RGB")
-
-input_points = [[
-    [
-        [450, 600],
-        [460, 600],
-        [470, 600]
-    ],
-    [
-        [900, 600],
-        [910, 600],
-        [920, 600]
-    ],
-]]
-# B=1, N=2, P=3. 实际上分别指向图片中左边和右边的窗户
-# B: 图片数量, N: 每个图片中的物体数量, P: 每个物体的参考点数量, 2: x与y
-# [B, N, P, 2] -> [B, N, P, 2]
-
-inputs = processor(
-    raw_image,
-    input_points=input_points,
-    return_tensors="pt"
-)
-
-with torch.no_grad():
-    outputs = model(**inputs)
-# outputs.iou_scores: (1, 2, 3), 也就是: (B, N, 3)
-# outputs.pred_masks: (1, 2, 3, 256, 256), 浮点数, 也就是: (B, N, 3, 256, 256)
-
-# post_process_masks 实际做的事情是把模型输出的 outputs.pred_masks 放缩回原始尺寸
-# 然后根据该像素位置的值来判断是否为物体: 大于0.0则为物体,小于0.0则不是物体
-masks = processor.image_processor.post_process_masks(
-    outputs.pred_masks.cpu(), inputs["original_sizes"].cpu(), inputs["reshaped_input_sizes"].cpu()
-)
-# masks: list[tensor], masks[0] 是 bool 型 tensor, False 表示不是物体, True 表示物体区域
-# len(masks) = 1 = B
-# masks[0].shape = (2, 3, 1764, 2646) = (N, 3, H, W)
-# 把预测 mask 输出为图片
-os.makedirs("output_masks", exist_ok=True)
-for mask_idx, mask in enumerate(masks):
-    N, three, _, _ = mask.shape
-    for i in range(N):
-        for j in range(three):
-            img = mask[i, j].cpu().numpy().astype("uint8") * 255
-            img = Image.fromarray(img)
-            img.save(f"output_masks/image_{mask_idx}_object_{i}_result_{j}.png")
-
-# 输出的mask的展示
-# image_0_object_0_result_0.png  -> 左侧窗户
-# image_0_object_0_result_1.png  -> 两侧窗户
-# image_0_object_0_result_2.png  -> 整个车子
-# image_0_object_0_result_0.png  -> 右侧窗户
-# image_0_object_0_result_1.png  -> 两侧窗户
-# image_0_object_0_result_2.png  -> 整个车子
-```
 
 Point, Box, Mask
 
@@ -370,6 +379,34 @@ TODO: 卷积与反卷积的理解
 
 ### 模型整体流程
 
+TODO:
+
+根据之前的 demo:
+
+```python
+inputs = processor(raw_image, input_points=input_points, return_tensors="pt")
+
+with torch.no_grad():
+    outputs = model(**inputs)
+```
+
+```python
+# 
+def forward(
+    self,
+    pixel_values: Optional[torch.FloatTensor] = None,
+    input_points: Optional[torch.FloatTensor] = None,
+    input_labels: Optional[torch.LongTensor] = None,
+    input_boxes: Optional[torch.FloatTensor] = None,
+    input_masks: Optional[torch.LongTensor] = None,
+    image_embeddings: Optional[torch.FloatTensor] = None,
+    multimask_output: bool = True,
+    attention_similarity: Optional[torch.FloatTensor] = None,
+    target_embedding: Optional[torch.FloatTensor] = None,
+    **kwargs: Unpack[TransformersKwargs],
+) -> SamImageSegmentationOutput:
+    pass
+```
 
 按 huggingface 中 SamModel 的 forward 函数来看:
 
